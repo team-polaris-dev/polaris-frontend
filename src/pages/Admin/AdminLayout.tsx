@@ -1,10 +1,11 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Activity, BarChart3, Database, History, Workflow, LogOut } from 'lucide-react'
+import { Activity, BarChart3, Database, History, ShieldCheck, Workflow, LogOut } from 'lucide-react'
 import { clearAdminToken } from '../../lib/api/admin'
 
 const NAV = [
   { to: '/admin/pipeline',  label: '파이프라인', icon: Workflow },
   { to: '/admin/jobs',      label: '잡 목록',    icon: History },
+  { to: '/admin/qc',        label: '추출 QC',   icon: ShieldCheck },
   { to: '/admin/analytics', label: '챗봇 통계',  icon: BarChart3 },
   { to: '/admin/db',        label: 'DB 상태',    icon: Database },
 ]

@@ -15,7 +15,10 @@ export type StepId =
   | 'qdrant'
   | 'neo4j_struct'
   | 'extract'
-export type ExtractProvider = 'ollama' | 'claude'
+  | 'qc'
+  | 'canon'
+  | 'cleanup'
+export type ExtractProvider = 'ollama' | 'apimaker'
 
 export interface StepConfig {
   id: StepId
@@ -23,9 +26,151 @@ export interface StepConfig {
   params?: {
     provider?: ExtractProvider
     model?: string
-    chunk_window?: [number, number] | null
+    /** 추출 청크 수 상한 — null/생략 = pending 전부 (기본) */
+    limit?: number | null
     positive_only?: boolean
   }
+}
+
+/** GET /api/admin/corps/search — 전체 상장사(corp_master)에서 검색, 보유/미보유 구분 */
+export interface CorpSearchResult {
+  corp_code: string
+  corp_name: string
+  stock_code: string | null
+  doc_count: number
+  has_data: boolean
+}
+
+/** GET /api/admin/qc/batch/status — 서버 백그라운드 일괄 판정 진행 상태 */
+export interface QcBatchStatus {
+  running: boolean
+  done: number
+  total: number
+  errors: number
+  stop_requested: boolean
+  started_at: string | null
+  finished_at: string | null
+}
+
+/** GET /api/admin/qc/entity-batch/status — 비회사 후보 LLM 판정 진행 상태 */
+export interface QcEntityBatchStatus {
+  running: boolean
+  done: number
+  total: number
+  errors: number
+  stop_requested: boolean
+  started_at: string | null
+  finished_at: string | null
+}
+
+/** POST /api/admin/qc/entity-judge — 미해소 끝점 1개 타입 판정 요청 */
+export interface QcEntityJudgeRequest {
+  entity_key: string
+  name: string
+  chunk_id?: string | null
+}
+
+/** GET /api/admin/extract/pending — 회사별 추출 대상 규모 (실행 전 미리보기) */
+export interface ExtractPendingInfo {
+  corp_code: string
+  corp_name: string
+  eligible: number
+  done: number
+  pending: number
+}
+
+/** AI(apimaker) 방향 판정 — 표시용 제안. 적용은 사람이 confirm 후 resolve 호출 */
+export interface QcJudgment {
+  direction: 'a_to_b' | 'b_to_a' | 'uncertain'
+  reason: string
+  judged_at: string
+  a?: string
+  b?: string
+}
+
+/** GET /api/admin/qc/report — qc/extract 스텝 산출물 뷰어 */
+export interface QcConflict {
+  kind:
+    | 'bidirectional_supplies'
+    | 'self_loop'
+    | 'ledger_graph_direction_conflict'
+    | 'non_company_supplies'
+    | string
+  judgment?: QcJudgment
+  [key: string]: unknown
+}
+
+export interface QcResolveRequest {
+  kind: 'self_loop' | 'bidirectional_supplies' | 'non_company_supplies'
+  org?: string
+  rel?: string
+  chunk_id?: string | null
+  from_id?: string
+  to_id?: string
+}
+
+/** GET /api/admin/qc/chunk — 청크 원문 (방향 판정 근거 확인용) */
+export interface QcChunk {
+  chunk_id: string
+  found: boolean
+  corp_name?: string
+  title?: string
+  section_path?: string
+  text?: string
+}
+
+/** GET /api/admin/qc/disabled — QC 로 비활성화된(되돌리기 가능) SUPPLIES_TO 엣지 */
+export interface QcDisabledEdge {
+  from_name: string
+  to_name: string
+  from_id: string
+  to_id: string
+  disabled_at: string
+  reason: string
+  chunk_id: string | null
+}
+
+export interface QcJudgeRequest {
+  a: string
+  b: string
+  a_id: string
+  b_id: string
+  fwd_chunk?: string | null
+  rev_chunk?: string | null
+}
+
+export interface QcSuspect {
+  kind: string
+  corp_code?: string
+  chunk_id?: string
+  reason?: string
+  flags?: string[]
+  preview?: string
+  edge?: { subject?: string; predicate?: string; object?: string }
+  [key: string]: unknown
+}
+
+export interface QcCorpReport {
+  corp_code: string
+  generated_at: string
+  summary: {
+    corp_name?: string
+    chunks?: number
+    clean_edges?: number
+    rejected?: number
+    zero_zero?: number
+    errors?: number
+    suspects?: number
+    predicates?: Record<string, number>
+    reject_reasons?: Record<string, number>
+  }
+  suspects: QcSuspect[]
+}
+
+export interface QcReport {
+  conflicts: { generated_at: string; items: QcConflict[] } | null
+  corps: QcCorpReport[]
+  measured_at: string
 }
 
 export interface JobCreateRequest {
@@ -77,6 +222,20 @@ export interface DBStatus {
   mariadb: Record<string, number>
   qdrant: Record<string, { points_count: number; vectors_count: number }>
   neo4j: { nodes: Record<string, number>; rels: Record<string, number> }
+  measured_at: string
+}
+
+/** GET /api/admin/connections — 의존 서비스 연결 점검. 주소는 .env 단일 출처(읽기전용). */
+export interface ConnectionStatus {
+  name: string
+  address: string
+  ok: boolean
+  latency_ms: number
+  detail: string
+}
+
+export interface ConnectionsResponse {
+  services: ConnectionStatus[]
   measured_at: string
 }
 

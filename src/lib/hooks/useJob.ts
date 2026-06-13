@@ -27,6 +27,153 @@ export function useDBStatus() {
   })
 }
 
+export function useConnections() {
+  return useQuery({
+    queryKey: ['admin', 'connections'],
+    queryFn: () => adminApi.connections(),
+    refetchInterval: 30_000,
+  })
+}
+
+export function useQcReport() {
+  return useQuery({
+    queryKey: ['admin', 'qc-report'],
+    queryFn: () => adminApi.qcReport(),
+    refetchInterval: 30_000,
+  })
+}
+
+export function useCorpsSearch(q: string) {
+  return useQuery({
+    queryKey: ['admin', 'corps-search', q],
+    queryFn: () => adminApi.corpsSearch(q),
+    enabled: q.trim().length >= 1,
+    staleTime: 60_000,
+  })
+}
+
+export function useQcBatchStatus() {
+  return useQuery({
+    queryKey: ['admin', 'qc-batch'],
+    queryFn: () => adminApi.qcBatchStatus(),
+    refetchInterval: (query) => (query.state.data?.running ? 2_500 : 15_000),
+  })
+}
+
+export function useQcJudgeAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => adminApi.qcJudgeAll(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-batch'] }),
+  })
+}
+
+export function useQcJudgeAllStop() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => adminApi.qcJudgeAllStop(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-batch'] }),
+  })
+}
+
+export function useQcApplyAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => adminApi.qcApplyAll(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'qc-report'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'qc-batch'] })
+    },
+  })
+}
+
+export function useQcEntityBatchStatus() {
+  return useQuery({
+    queryKey: ['admin', 'qc-entity-batch'],
+    queryFn: () => adminApi.qcEntityBatchStatus(),
+    refetchInterval: (query) => (query.state.data?.running ? 2_500 : 20_000),
+  })
+}
+
+export function useQcEntityJudgeAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => adminApi.qcEntityJudgeAll(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-entity-batch'] }),
+  })
+}
+
+export function useQcEntityJudgeAllStop() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => adminApi.qcEntityJudgeAllStop(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-entity-batch'] }),
+  })
+}
+
+export function useQcRescan() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => adminApi.qcRescan(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-report'] }),
+  })
+}
+
+export function useQcJudge() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: adminApi.qcJudge,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-report'] }),
+  })
+}
+
+export function useQcResolve() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: adminApi.qcResolve,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'qc-report'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'qc-disabled'] })
+    },
+  })
+}
+
+export function useQcAcknowledge() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: adminApi.qcAcknowledge,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'qc-report'] }),
+  })
+}
+
+export function useQcDisabled() {
+  return useQuery({
+    queryKey: ['admin', 'qc-disabled'],
+    queryFn: () => adminApi.qcDisabled(),
+    refetchInterval: 30_000,
+  })
+}
+
+export function useQcRestore() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: adminApi.qcRestore,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'qc-report'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'qc-disabled'] })
+    },
+  })
+}
+
+export function useExtractPending(corpCodes: string[], positive: boolean) {
+  return useQuery({
+    queryKey: ['admin', 'extract-pending', [...corpCodes].sort().join(','), positive],
+    queryFn: () => adminApi.extractPending(corpCodes, positive),
+    enabled: corpCodes.length > 0,
+    staleTime: 30_000,  // REGEXP 스캔이라 과도한 재조회 방지
+  })
+}
+
 export function useCorps() {
   return useQuery({
     queryKey: ['admin', 'corps'],

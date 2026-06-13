@@ -8,6 +8,9 @@ const STEP_LABELS: Record<string, string> = {
   qdrant: 'Qdrant',
   neo4j_struct: 'Neo4j 정형',
   extract: 'KG 추출',
+  qc: '추출 QC',
+  canon: '엔티티 통합',
+  cleanup: '원본 정리',
 }
 
 type Props = { job: JobResponse }

@@ -8,11 +8,23 @@
 import type {
   AnalyticsOverview,
   CancelResponse,
+  ConnectionsResponse,
   CorpInfo,
+  CorpSearchResult,
+  ExtractPendingInfo,
+  QcBatchStatus,
+  QcChunk,
+  QcEntityBatchStatus,
+  QcEntityJudgeRequest,
+  QcDisabledEdge,
   DBStatus,
   IntentCount,
   JobCreateRequest,
   JobResponse,
+  QcJudgeRequest,
+  QcJudgment,
+  QcReport,
+  QcResolveRequest,
   RecentSession,
   ToolCount,
   TopUser,
@@ -56,7 +68,50 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const adminApi = {
   health: () => request<{ ok: boolean }>('/health'),
+  connections: () => request<ConnectionsResponse>('/connections'),
   dbStatus: () => request<DBStatus>('/db/status'),
+  extractPending: (corpCodes: string[], positive = false) =>
+    request<ExtractPendingInfo[]>(
+      `/extract/pending?corp_codes=${corpCodes.join(',')}&positive=${positive}`,
+    ),
+  corpsSearch: (q: string, limit = 20) =>
+    request<CorpSearchResult[]>(`/corps/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  qcReport: () => request<QcReport>('/qc/report'),
+  qcRescan: () =>
+    request<{ ok: boolean; conflicts: number }>('/qc/rescan', { method: 'POST' }),
+  qcJudge: (body: QcJudgeRequest) =>
+    request<QcJudgment>('/qc/judge', { method: 'POST', body: JSON.stringify(body) }),
+  qcAcknowledge: (body: QcJudgeRequest) =>
+    request<{ ok: boolean }>('/qc/acknowledge', { method: 'POST', body: JSON.stringify(body) }),
+  qcJudgeAll: () => request<{ ok: boolean }>('/qc/judge-all', { method: 'POST' }),
+  qcJudgeAllStop: () => request<{ ok: boolean }>('/qc/judge-all/stop', { method: 'POST' }),
+  qcBatchStatus: () => request<QcBatchStatus>('/qc/batch/status'),
+  qcApplyAll: () =>
+    request<{ ok: boolean; applied: number; disabled: number }>('/qc/apply-all', {
+      method: 'POST',
+    }),
+  qcResolve: (body: QcResolveRequest) =>
+    request<{ ok: boolean; disabled: number }>('/qc/resolve', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  qcRestore: (body: QcResolveRequest) =>
+    request<{ ok: boolean; restored: number }>('/qc/restore', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  qcDisabled: () => request<QcDisabledEdge[]>('/qc/disabled'),
+  qcChunk: (ids: string[]) =>
+    request<QcChunk[]>(`/qc/chunk?ids=${ids.map(encodeURIComponent).join(',')}`),
+  qcEntityJudge: (body: QcEntityJudgeRequest) =>
+    request<{ verdict: string; reason: string }>('/qc/entity-judge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  qcEntityJudgeAll: () => request<{ ok: boolean }>('/qc/entity-judge-all', { method: 'POST' }),
+  qcEntityJudgeAllStop: () =>
+    request<{ ok: boolean }>('/qc/entity-judge-all/stop', { method: 'POST' }),
+  qcEntityBatchStatus: () => request<QcEntityBatchStatus>('/qc/entity-batch/status'),
   corps: () => request<CorpInfo[]>('/corps'),
   createJob: (body: JobCreateRequest) =>
     request<JobResponse>('/pipeline/jobs', {

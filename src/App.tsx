@@ -9,6 +9,7 @@ import JobsHistory from './pages/Admin/JobsHistory'
 import JobDetail from './pages/Admin/JobDetail'
 import DBStatusPage from './pages/Admin/DBStatus'
 import AnalyticsPage from './pages/Admin/Analytics'
+import QCReportPage from './pages/Admin/QCReport'
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="pipeline" element={<PipelineConsole />} />
         <Route path="jobs" element={<JobsHistory />} />
         <Route path="jobs/:jobId" element={<JobDetail />} />
+        <Route path="qc" element={<QCReportPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="db" element={<DBStatusPage />} />
       </Route>
