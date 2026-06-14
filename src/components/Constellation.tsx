@@ -19,7 +19,17 @@ const REL_COLOR: Record<string, string> = {
   INVESTS: '#6ee7b7',
   INVESTS_IN: '#6ee7b7',
 }
+const REL_LABEL: Record<string, string> = {
+  IS_SUBSIDIARY_OF: '자회사',
+  EXECUTIVE_OF: '임원',
+  IS_MAJOR_SHAREHOLDER_OF: '대주주',
+  SUPPLIES_TO: '공급',
+  ACQUIRES: '인수',
+  INVESTS: '투자',
+  INVESTS_IN: '투자',
+}
 const relColor = (t: string) => REL_COLOR[t] || '#9ec3ff'
+const relLabel = (t: string) => REL_LABEL[t] || t
 
 const shortLabel = (s: string, n = 8) => (s.length > n ? s.slice(0, n) + '…' : s)
 
@@ -59,7 +69,7 @@ const VH = 300
 const STEP = 0.34 // 별이 하나씩 빛나는 간격(초)
 
 export default function Constellation({ nodes, edges }: Props) {
-  const { placed, placedEdges, ambient, total } = useMemo(() => {
+  const { placed, placedEdges, ambient, total, legendTypes } = useMemo(() => {
     // 1) 연결 수(degree) = 별의 밝기·중요도
     const degree = new Map<string, number>()
     for (const e of edges) {
@@ -140,7 +150,15 @@ export default function Constellation({ nodes, edges }: Props) {
       d: rnd(i * 5 + 11) * 4,
     }))
 
-    return { placed, placedEdges, ambient, total: nodes.length }
+    // 6) 실제로 등장한 관계 유형만 범례로 추출 (중복 제거)
+    const legendTypes = [...new Set(
+      edges
+        .filter((e) => keptIds.has(e.source) && keptIds.has(e.target))
+        .map((e) => e.type)
+        .filter(Boolean)
+    )]
+
+    return { placed, placedEdges, ambient, total: nodes.length, legendTypes }
   }, [nodes, edges])
 
   if (!placed.length) return null
@@ -258,6 +276,21 @@ export default function Constellation({ nodes, edges }: Props) {
           )
         })}
       </svg>
+
+      {/* 색상 범례 — 실제 등장한 관계 유형만 */}
+      {legendTypes.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 px-1 pb-1">
+          {legendTypes.map((t) => (
+            <span key={t} className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500">
+              <span
+                className="inline-block h-px w-4 rounded-full"
+                style={{ backgroundColor: relColor(t), opacity: 0.85 }}
+              />
+              {relLabel(t)}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
