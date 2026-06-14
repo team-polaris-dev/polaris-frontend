@@ -14,6 +14,10 @@ body {
 html.dark body { background: #0f172a; color: #e2e8f0; }  /* 다크 전역 */
 a { text-decoration: none; color: inherit; }
 
+/* ── 스크롤바: 기본 흰색 스크롤바 숨김(스크롤은 그대로 동작) ── */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }       /* Firefox/IE */
+.no-scrollbar::-webkit-scrollbar { width: 0; height: 0; }                 /* Chrome/Safari */
+
 /* ── 진입화면 별 ── */
 .star {
   position: absolute;
