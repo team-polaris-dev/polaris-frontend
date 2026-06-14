@@ -102,6 +102,10 @@ export default function ChatApp() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [sessionId, setSessionId] = useState(() => `session_${Date.now()}`)
+  const [panelWidth, setPanelWidth] = useState(() => Math.round(window.innerWidth * 0.4))
+  const isDragging = useRef(false)
+  const dragStartX = useRef(0)
+  const dragStartWidth = useRef(0)
 
   const started = messages.some((m) => m.role === 'user')
 
@@ -172,6 +176,36 @@ export default function ChatApp() {
     clearUser()
     navigate('/', { replace: true })
   }, [navigate])
+
+  const onResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault()
+    isDragging.current = true
+    dragStartX.current = e.clientX
+    dragStartWidth.current = panelWidth
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isDragging.current) return
+      const delta = dragStartX.current - e.clientX
+      const next = Math.min(Math.max(dragStartWidth.current + delta, 280), window.innerWidth * 0.65)
+      setPanelWidth(Math.round(next))
+    }
+    const onUp = () => {
+      if (!isDragging.current) return
+      isDragging.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   // 현재 패널이 보여줄 데이터(특정 메시지 기준)
   const activeData = useMemo(
@@ -557,13 +591,24 @@ export default function ChatApp() {
           </div>
         </main>
 
+        {/* ───────── 드래그 핸들 ───────── */}
+        {showRight && (
+          <div
+            onMouseDown={onResizeStart}
+            className="group relative z-20 w-2 shrink-0 cursor-col-resize"
+          >
+            <div className="absolute inset-y-0 left-0.5 w-px bg-slate-200 transition-colors group-hover:bg-blue-400 dark:bg-white/10 dark:group-hover:bg-blue-400/50" />
+          </div>
+        )}
+
         {/* ───────── 우측 분석 패널 ───────── */}
         <aside
-          className={`shrink-0 overflow-hidden border-slate-200 bg-slate-50/70 backdrop-blur-xl transition-all duration-500 ease-out dark:border-white/[0.06] dark:bg-[#0B0820]/40 ${
-            showRight ? 'w-2/5 border-l opacity-100' : 'w-0 border-l-0 opacity-0'
+          style={{ width: showRight ? panelWidth : 0 }}
+          className={`shrink-0 overflow-hidden border-slate-200 bg-slate-50/70 backdrop-blur-xl transition-opacity duration-500 ease-out dark:border-white/[0.06] dark:bg-[#0B0820]/40 ${
+            showRight ? 'border-l opacity-100' : 'border-l-0 opacity-0'
           }`}
         >
-          <div className="flex h-full w-full min-w-[360px] flex-col">
+          <div className="flex h-full w-full flex-col">
             <div className="flex items-center border-b border-slate-200 px-3 pt-3 dark:border-white/[0.06]">
               <div className="flex flex-1">
                 {availableTabs.map((key) => {
