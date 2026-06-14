@@ -32,7 +32,6 @@ const rnd = (n: number) => {
 interface Props {
   nodes: GNode[]
   edges: GEdge[]
-  limit?: number // 보여줄 최대 노드 수(중요도 상위)
 }
 
 interface Placed extends GNode {
@@ -59,8 +58,8 @@ const VW = 440
 const VH = 300
 const STEP = 0.34 // 별이 하나씩 빛나는 간격(초)
 
-export default function Constellation({ nodes, edges, limit = 7 }: Props) {
-  const { placed, placedEdges, ambient, total, kept } = useMemo(() => {
+export default function Constellation({ nodes, edges }: Props) {
+  const { placed, placedEdges, ambient, total } = useMemo(() => {
     // 1) 연결 수(degree) = 별의 밝기·중요도
     const degree = new Map<string, number>()
     for (const e of edges) {
@@ -68,11 +67,10 @@ export default function Constellation({ nodes, edges, limit = 7 }: Props) {
       degree.set(e.target, (degree.get(e.target) || 0) + 1)
     }
 
-    // 2) 상위 N개만 채택, 허브 = 최다 연결
-    const ranked = [...nodes].sort(
+    // 2) degree 순 정렬 후 전체 렌더링, 허브 = 최다 연결
+    const keptNodes = [...nodes].sort(
       (a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0),
     )
-    const keptNodes = ranked.slice(0, limit)
     const keptIds = new Set(keptNodes.map((n) => n.id))
 
     // degree → 별 크기(등급) 매핑
@@ -142,8 +140,8 @@ export default function Constellation({ nodes, edges, limit = 7 }: Props) {
       d: rnd(i * 5 + 11) * 4,
     }))
 
-    return { placed, placedEdges, ambient, total: nodes.length, kept: keptNodes.length }
-  }, [nodes, edges, limit])
+    return { placed, placedEdges, ambient, total: nodes.length }
+  }, [nodes, edges])
 
   if (!placed.length) return null
 
@@ -169,7 +167,7 @@ export default function Constellation({ nodes, edges, limit = 7 }: Props) {
       `}</style>
 
       <span className="pointer-events-none absolute left-1 top-1 z-10 text-[10px] font-medium tracking-wider text-slate-400/80">
-        공급망 · 핵심 {kept}개{kept < total && <span className="text-slate-400/60"> / 전체 {total}</span>}
+        공급망 · {total}개
       </span>
 
       <svg viewBox={`0 0 ${VW} ${VH}`} className="h-[260px] w-full">
