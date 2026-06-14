@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Menu,
   X,
@@ -8,18 +9,19 @@ import {
   Send,
   Sparkles,
   FileText,
-  Network,
-  Link2,
   PanelRightClose,
   PanelRightOpen,
   ChevronDown,
   ExternalLink,
+  LogOut,
 } from 'lucide-react'
 import StarField from '../components/StarField'
 import ThemeToggle from '../components/ThemeToggle'
-import NetworkGraph, { edgeKey } from '../components/NetworkGraph'
 import type { GNode, GEdge } from '../components/NetworkGraph'
+import Constellation from '../components/Constellation'
+import LoadingConstellation from '../components/LoadingConstellation'
 import Markdown from '../components/Markdown'
+import { API_BASE, getUser, clearUser } from '../lib/auth'
 
 /* ──────────────────────────────────────────────────────────────
    /app — POLARIS 워크스페이스
@@ -28,10 +30,9 @@ import Markdown from '../components/Markdown'
      두 데이터가 모두 없으면 패널·탭을 표시하지 않는다.
    ────────────────────────────────────────────────────────────── */
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || '/api'
-
 type Role = 'user' | 'assistant'
-type PanelKey = 'graph' | 'documents'
+// 우측 패널은 '원본 문서'만 — 관계도는 채팅 중앙에 별자리로 인라인 표시한다.
+type PanelKey = 'documents'
 type Level = 'beginner' | 'expert'
 
 interface GraphData {
@@ -60,33 +61,19 @@ interface Message {
   graph?: GraphData
   documents?: DocItem[]
 }
-interface ChatItem {
-  id: number
+interface SessionItem {
+  session_id: string
   title: string
   preview: string
-  date: string
+  message_count: number
+  last_at: string
 }
-
-const REL_COLOR: Record<string, string> = {
-  IS_SUBSIDIARY_OF: '#60a5fa',
-  EXECUTIVE_OF: '#f472b6',
-  IS_MAJOR_SHAREHOLDER_OF: '#34d399',
-  SUPPLIES_TO: '#60a5fa',
-  ACQUIRES: '#f472b6',
-  INVESTS: '#34d399',
-}
-const relColor = (t: string) => REL_COLOR[t] || '#94a3b8'
 
 const hasGraph = (m?: { graph?: GraphData }) => !!m?.graph?.edges?.length
 const hasDocs = (m?: { documents?: DocItem[] }) => !!m?.documents?.length
 
-/* ── 데모용 사이드바 기록 (대화 목록은 별도 백엔드 연동 전까지 정적) ── */
-const CHAT_HISTORY: ChatItem[] = [
-  { id: 1, title: '한빛전자 공급계약 영향 분석', preview: '단일판매·공급계약 체결 공시…', date: '오늘' },
-  { id: 2, title: '서연바이오 유상증자 해석', preview: '주주배정 후 실권주 일반공모…', date: '오늘' },
-  { id: 3, title: '누리소프트 최대주주 변경', preview: '경영권 양수도 계약 체결로…', date: '어제' },
-  { id: 4, title: '반도체 밸류체인 정리', preview: '소부장 공급망 2-hop 추적…', date: '3일 전' },
-]
+// DART 공식 공시 뷰어 URL — 14자리 접수번호(rcept_no)로 결정적으로 만들 수 있다.
+const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}`
 
 const GREETING: Message = {
   id: 0,
@@ -96,25 +83,95 @@ const GREETING: Message = {
 }
 
 export default function ChatApp() {
+  const navigate = useNavigate()
+  const user = useMemo(() => getUser(), [])
+
   const [messages, setMessages] = useState<Message[]>([GREETING])
   const [input, setInput] = useState('')
-  const [activeChat, setActiveChat] = useState(1)
+  const [sessions, setSessions] = useState<SessionItem[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [rightOpen, setRightOpen] = useState(false)
   const [inputFocused, setInputFocused] = useState(false)
   const [loading, setLoading] = useState(false)
   const [level, setLevel] = useState<Level>('beginner')
 
-  // 우측 패널 상태
+  // 우측 패널 상태 (원본 문서 전용)
   const [activeMsgId, setActiveMsgId] = useState<number | null>(null)
-  const [activePanel, setActivePanel] = useState<PanelKey>('graph')
-  const [selectedEdgeKey, setSelectedEdgeKey] = useState<string | null>(null)
+  const [activePanel, setActivePanel] = useState<PanelKey>('documents')
   const [openDoc, setOpenDoc] = useState<string | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const threadId = useRef(`session_${Date.now()}`)
+  const [sessionId, setSessionId] = useState(() => `session_${Date.now()}`)
 
   const started = messages.some((m) => m.role === 'user')
+
+  // 로그인 안 했으면 진입 화면으로 돌려보낸다
+  useEffect(() => {
+    if (!user) navigate('/', { replace: true })
+  }, [user, navigate])
+
+  // 사이드바 세션 목록 새로고침
+  const refreshSessions = useCallback(async () => {
+    if (!user) return
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions?user_id=${encodeURIComponent(user.user_id)}`)
+      if (!res.ok) return
+      setSessions((await res.json()) as SessionItem[])
+    } catch (e) {
+      console.error('세션 목록 조회 실패:', e)
+    }
+  }, [user])
+
+  useEffect(() => {
+    refreshSessions()
+  }, [refreshSessions])
+
+  // 사이드바에서 과거 세션 선택 → 메시지 기록 복원
+  const loadSession = useCallback(async (sid: string) => {
+    setSessionId(sid)
+    setDrawerOpen(false)
+    setActiveMsgId(null)
+    setRightOpen(false)
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sid)}/messages`)
+      if (!res.ok) throw new Error(`${res.status}`)
+      const rows = (await res.json()) as {
+        message_id: number
+        role: Role
+        content: string
+        panel?: string
+        graph?: GraphData
+        documents?: DocItem[]
+      }[]
+      // 패널 데이터(관계도/원본문서)도 함께 복원해 우측 패널 버튼을 되살린다.
+      const restored: Message[] = rows.map((r) => ({
+        id: r.message_id,
+        role: r.role,
+        content: r.content,
+        panel: r.panel,
+        graph: r.graph || { nodes: [], edges: [] },
+        documents: r.documents || [],
+      }))
+      setMessages(restored.length ? [GREETING, ...restored] : [GREETING])
+    } catch (e) {
+      console.error('대화 복원 실패:', e)
+      setMessages([GREETING])
+    }
+  }, [])
+
+  // 새 대화 시작
+  const startNewChat = useCallback(() => {
+    setMessages([GREETING])
+    setActiveMsgId(null)
+    setRightOpen(false)
+    setDrawerOpen(false)
+    setSessionId(`session_${Date.now()}`)
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    clearUser()
+    navigate('/', { replace: true })
+  }, [navigate])
 
   // 현재 패널이 보여줄 데이터(특정 메시지 기준)
   const activeData = useMemo(
@@ -123,7 +180,6 @@ export default function ChatApp() {
   )
   const availableTabs = useMemo<PanelKey[]>(() => {
     const tabs: PanelKey[] = []
-    if (hasGraph(activeData ?? undefined)) tabs.push('graph')
     if (hasDocs(activeData ?? undefined)) tabs.push('documents')
     return tabs
   }, [activeData])
@@ -144,14 +200,13 @@ export default function ChatApp() {
   const openPanel = (msgId: number, panel: PanelKey) => {
     setActiveMsgId(msgId)
     setActivePanel(panel)
-    setSelectedEdgeKey(null)
     setOpenDoc(null)
     setRightOpen(true)
   }
 
   const handleSend = async () => {
     const text = input.trim()
-    if (!text || loading) return
+    if (!text || loading || !user) return
 
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: text }])
     setInput('')
@@ -162,9 +217,9 @@ export default function ChatApp() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: 'user_123',
+          user_id: user.user_id,
           message: text,
-          thread_id: threadId.current,
+          thread_id: sessionId,
           level,
         }),
       })
@@ -188,13 +243,13 @@ export default function ChatApp() {
         },
       ])
 
-      // 데이터가 있으면 우측 패널 자동 오픈
-      const gOk = graph.edges.length > 0
-      const dOk = documents.length > 0
-      if (gOk || dOk) {
-        const target: PanelKey = data.panel === 'documents' ? 'documents' : gOk ? 'graph' : 'documents'
-        openPanel(msgId, target)
+      // 원본 문서가 있으면 우측 패널 자동 오픈 (관계도는 중앙 별자리로 표시)
+      if (documents.length > 0) {
+        openPanel(msgId, 'documents')
       }
+
+      // 사이드바 목록 갱신(새 세션이면 새로 나타나고, 제목/시간 최신화)
+      refreshSessions()
     } catch (error) {
       console.error('API 통신 실패:', error)
       setMessages((prev) => [
@@ -211,21 +266,8 @@ export default function ChatApp() {
   }
 
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
-    graph: { label: '기업 관계도', icon: Network },
     documents: { label: '원본 문서', icon: FileText },
   }
-
-  // 그래프 탭에서 선택된 엣지 → 근거 문서 매칭
-  const selectedEdge = useMemo(() => {
-    if (!selectedEdgeKey || !activeData?.graph) return null
-    const idx = activeData.graph.edges.findIndex((e, i) => edgeKey(e, i) === selectedEdgeKey)
-    return idx >= 0 ? activeData.graph.edges[idx] : null
-  }, [selectedEdgeKey, activeData])
-
-  const evidenceDoc = useMemo(() => {
-    if (!selectedEdge?.rcept_no || !activeData?.documents) return null
-    return activeData.documents.find((d) => d.rcept_no === selectedEdge.rcept_no) ?? null
-  }, [selectedEdge, activeData])
 
   return (
     <div className="relative h-screen overflow-hidden bg-white text-slate-900 transition-colors duration-500 dark:bg-[#0B0820] dark:text-white">
@@ -289,13 +331,7 @@ export default function ChatApp() {
         </div>
         <div className="px-3">
           <button
-            onClick={() => {
-              setMessages([GREETING])
-              setActiveMsgId(null)
-              setRightOpen(false)
-              setDrawerOpen(false)
-              threadId.current = `session_${Date.now()}`
-            }}
+            onClick={startNewChat}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-700"
           >
             <Plus size={16} /> 새 대화
@@ -310,19 +346,19 @@ export default function ChatApp() {
             />
           </div>
         </div>
-        <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
+        <div className="no-scrollbar mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
           <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
             최근 대화
           </p>
-          {CHAT_HISTORY.map((chat) => (
+          {sessions.length === 0 && (
+            <p className="px-2 py-3 text-xs text-slate-400">아직 대화 기록이 없습니다.</p>
+          )}
+          {sessions.map((s) => (
             <button
-              key={chat.id}
-              onClick={() => {
-                setActiveChat(chat.id)
-                setDrawerOpen(false)
-              }}
+              key={s.session_id}
+              onClick={() => loadSession(s.session_id)}
               className={`group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
-                activeChat === chat.id
+                sessionId === s.session_id
                   ? 'bg-blue-600/10 dark:bg-white/[0.08]'
                   : 'hover:bg-slate-100 dark:hover:bg-white/[0.04]'
               }`}
@@ -330,17 +366,35 @@ export default function ChatApp() {
               <MessageSquare
                 size={15}
                 className={`mt-0.5 shrink-0 ${
-                  activeChat === chat.id ? 'text-blue-500' : 'text-slate-400'
+                  sessionId === s.session_id ? 'text-blue-500' : 'text-slate-400'
                 }`}
               />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">{chat.title}</span>
-                <span className="block truncate text-xs text-slate-400">{chat.preview}</span>
+                <span className="block truncate text-sm font-medium">{s.title}</span>
+                <span className="block truncate text-xs text-slate-400">{s.preview}</span>
               </span>
-              <span className="shrink-0 text-[10px] text-slate-400">{chat.date}</span>
+              <span className="shrink-0 text-[10px] text-slate-400">{s.message_count}</span>
             </button>
           ))}
         </div>
+
+        {/* 로그인 사용자 + 로그아웃 */}
+        {user && (
+          <div className="flex items-center gap-2 border-t border-slate-200 px-4 py-3 dark:border-white/[0.08]">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-sky-300 to-blue-600 text-xs font-bold text-white">
+              {user.display_name.slice(0, 1).toUpperCase()}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{user.display_name}</span>
+            <button
+              onClick={handleLogout}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-red-500 dark:hover:bg-white/10"
+              title="로그아웃"
+              aria-label="로그아웃"
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
+        )}
       </aside>
 
       {/* ───────── 메인 화면 (중앙 + 우측 패널) ───────── */}
@@ -384,11 +438,9 @@ export default function ChatApp() {
                 style={{ animation: 'polarisRise .6s ease both' }}
                 className="mb-8 flex flex-col items-center text-center"
               >
-                <span className="relative mb-5 flex h-3 w-3">
-                  <span className="absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-60 blur-[3px]" />
-                  <span className="relative inline-flex h-3 w-3 rounded-full bg-sky-400 dark:bg-white" />
-                </span>
-                <h1 className="mb-2 text-2xl font-bold sm:text-3xl">무엇이 궁금하신가요?</h1>
+                <h1 className="mb-2 text-2xl font-bold sm:text-3xl">
+                  {user ? `${user.display_name}님, 무엇이 궁금하신가요?` : '무엇이 궁금하신가요?'}
+                </h1>
                 <p className="max-w-md text-sm text-slate-500 dark:text-slate-400">
                   기업 공시·뉴스를 그래프로 연결해 분석해 드려요. 종목명이나 공시 내용을 입력해 보세요.
                 </p>
@@ -396,7 +448,7 @@ export default function ChatApp() {
             )}
 
             {started && (
-              <div ref={scrollRef} className="min-h-0 w-full flex-1 overflow-y-auto px-6 py-8">
+              <div ref={scrollRef} className="no-scrollbar min-h-0 w-full flex-1 overflow-y-auto px-6 py-8">
                 <div className="mx-auto flex max-w-3xl flex-col space-y-6">
                   {messages.map((m) =>
                     m.role === 'user' ? (
@@ -414,24 +466,18 @@ export default function ChatApp() {
                           <div className="w-full rounded-2xl rounded-tl-sm border border-slate-200 bg-white/70 px-4 py-2.5 backdrop-blur-sm dark:border-white/10 dark:bg-white/[0.04]">
                             <Markdown text={m.content} />
                           </div>
-                          {(hasGraph(m) || hasDocs(m)) && (
+                          {/* 관계도 결과 → 배경 별과 이어지는 별자리 공급망으로 인라인 표시 */}
+                          {hasGraph(m) && (
+                            <Constellation nodes={m.graph!.nodes} edges={m.graph!.edges} />
+                          )}
+                          {hasDocs(m) && (
                             <div className="flex flex-wrap gap-2">
-                              {hasGraph(m) && (
-                                <button
-                                  onClick={() => openPanel(m.id, 'graph')}
-                                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-300 dark:hover:bg-sky-300/20"
-                                >
-                                  <Network size={13} /> 관계도 보기
-                                </button>
-                              )}
-                              {hasDocs(m) && (
-                                <button
-                                  onClick={() => openPanel(m.id, 'documents')}
-                                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-300 dark:hover:bg-sky-300/20"
-                                >
-                                  <FileText size={13} /> 원본 문서 {m.documents!.length}건
-                                </button>
-                              )}
+                              <button
+                                onClick={() => openPanel(m.id, 'documents')}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-300 dark:hover:bg-sky-300/20"
+                              >
+                                <FileText size={13} /> 원본 문서 {m.documents!.length}건
+                              </button>
                             </div>
                           )}
                         </div>
@@ -439,40 +485,7 @@ export default function ChatApp() {
                     ),
                   )}
 
-                  {loading && (
-                    <div
-                      style={{ animation: 'polarisRise .4s ease both' }}
-                      className="flex w-full flex-col items-center justify-center py-10"
-                    >
-                      <svg
-                        viewBox="0 0 200 100"
-                        className="h-28 w-56 overflow-visible text-blue-500 drop-shadow-xl dark:text-sky-300 sm:h-32 sm:w-64"
-                      >
-                        <path
-                          d="M 20 80 L 60 20 L 110 50 L 160 15 L 180 70"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeDasharray="350"
-                          strokeDashoffset="350"
-                          style={{ animation: 'lineDrawBig 2.5s cubic-bezier(0.4, 0, 0.2, 1) forwards' }}
-                        />
-                        <circle cx="20" cy="80" r="3.5" fill="currentColor" style={{ animation: 'starPulse 2s infinite 0s', transformOrigin: '20px 80px' }} />
-                        <circle cx="60" cy="20" r="4" fill="currentColor" style={{ animation: 'starPulse 2s infinite 0.4s', transformOrigin: '60px 20px' }} />
-                        <circle cx="110" cy="50" r="5" fill="currentColor" style={{ animation: 'starPulse 2s infinite 0.8s', transformOrigin: '110px 50px' }} />
-                        <circle cx="160" cy="15" r="3.5" fill="currentColor" style={{ animation: 'starPulse 2s infinite 1.2s', transformOrigin: '160px 15px' }} />
-                        <circle cx="180" cy="70" r="4.5" fill="currentColor" style={{ animation: 'starPulse 2s infinite 1.6s', transformOrigin: '180px 70px' }} />
-                      </svg>
-                      <p
-                        className="mt-6 text-[13px] font-bold tracking-widest text-blue-600 dark:text-sky-300"
-                        style={{ animation: 'textGlow 1.2s ease-in-out infinite alternate' }}
-                      >
-                        데이터 간 연결망 분석 중...
-                      </p>
-                    </div>
-                  )}
+                  {loading && <LoadingConstellation />}
                 </div>
               </div>
             )}
@@ -592,98 +605,8 @@ export default function ChatApp() {
             <div
               key={activePanel}
               style={{ animation: 'polarisFade 0.35s ease both' }}
-              className="min-h-0 flex-1 overflow-y-auto p-5"
+              className="no-scrollbar min-h-0 flex-1 overflow-y-auto p-5"
             >
-              {/* ───── 기업 관계도 ───── */}
-              {activePanel === 'graph' && activeData?.graph && (
-                <div>
-                  <p className="mb-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-                    노드는 기업, 선은 공시에서 추출한 관계입니다.{' '}
-                    <span className="font-medium text-blue-600 dark:text-sky-300">연결선을 클릭</span>하면
-                    해당 관계의 근거 공시가 아래에 표시됩니다.
-                  </p>
-
-                  <div className="rounded-xl border border-slate-200 bg-white/50 dark:border-white/10 dark:bg-white/[0.02]">
-                    <NetworkGraph
-                      nodes={activeData.graph.nodes}
-                      edges={activeData.graph.edges}
-                      selectedKey={selectedEdgeKey}
-                      onSelectEdge={setSelectedEdgeKey}
-                    />
-                  </div>
-
-                  {/* 범례 */}
-                  <div className="mt-3 flex flex-wrap gap-3">
-                    {Array.from(new Set(activeData.graph.edges.map((e) => e.type))).map((type) => {
-                      const e = activeData.graph!.edges.find((x) => x.type === type)
-                      return (
-                        <span key={type} className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: relColor(type) }} />
-                          {e?.label || type}
-                        </span>
-                      )
-                    })}
-                  </div>
-
-                  {/* 선택된 엣지 근거 */}
-                  <div className="mt-4">
-                    {!selectedEdge ? (
-                      <div className="rounded-xl border border-dashed border-slate-300 bg-white/40 p-4 text-center text-xs text-slate-400 dark:border-white/15 dark:bg-white/[0.02]">
-                        그래프의 연결선을 클릭하면 해당 관계의 근거 공시가 여기에 표시됩니다.
-                      </div>
-                    ) : (
-                      <div
-                        className="rounded-xl border border-slate-200 bg-white/60 p-3.5 dark:border-white/10 dark:bg-white/[0.03]"
-                        style={{ animation: 'polarisFade .3s ease both' }}
-                      >
-                        <div className="mb-2 flex items-center gap-2">
-                          <Link2 size={14} className="shrink-0 text-blue-500" />
-                          <span className="text-sm font-semibold">
-                            {selectedEdge.source} <span className="text-slate-400">→</span> {selectedEdge.target}
-                          </span>
-                        </div>
-                        <div className="mb-2 flex items-center gap-1.5">
-                          <span
-                            className="rounded-md px-2 py-0.5 text-[10px] font-bold text-white"
-                            style={{ background: relColor(selectedEdge.type) }}
-                          >
-                            {selectedEdge.label}
-                          </span>
-                          <span className="font-mono text-[10px] text-slate-400">{selectedEdge.type}</span>
-                        </div>
-                        {selectedEdge.rcept_no ? (
-                          evidenceDoc ? (
-                            <button
-                              onClick={() => {
-                                setActivePanel('documents')
-                                setOpenDoc(evidenceDoc.chunk_id || evidenceDoc.rcept_no)
-                              }}
-                              className="mt-1 flex w-full items-start gap-2 rounded-lg border border-slate-200 bg-white/60 p-2.5 text-left transition hover:border-blue-300 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-white/20"
-                            >
-                              <FileText size={14} className="mt-0.5 shrink-0 text-blue-500" />
-                              <span className="min-w-0">
-                                <span className="block truncate text-xs font-medium">
-                                  {evidenceDoc.title || evidenceDoc.doc_type || '근거 공시'}
-                                </span>
-                                <span className="block truncate text-[10px] text-slate-400">
-                                  {evidenceDoc.corp_name} · 접수번호 {selectedEdge.rcept_no} · 원본 보기 →
-                                </span>
-                              </span>
-                            </button>
-                          ) : (
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              근거 공시 접수번호: <span className="font-mono">{selectedEdge.rcept_no}</span>
-                            </p>
-                          )
-                        ) : (
-                          <p className="text-xs text-slate-400">이 관계에는 연결된 근거 공시가 없습니다.</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
               {/* ───── 원본 문서 ───── */}
               {activePanel === 'documents' && activeData?.documents && (
                 <div className="space-y-2">
@@ -756,6 +679,17 @@ export default function ChatApp() {
                               {d.text}
                             </p>
                           </div>
+                        )}
+                        {/* DART 원문 링크 — 접수번호가 있으면 공식 뷰어로 새 탭 열기 */}
+                        {d.rcept_no && (
+                          <a
+                            href={dartUrl(d.rcept_no)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2 text-[11px] font-medium text-blue-600 transition hover:bg-blue-50 dark:border-white/10 dark:text-sky-300 dark:hover:bg-white/[0.04]"
+                          >
+                            <ExternalLink size={12} /> DART 원문 보기
+                          </a>
                         )}
                       </div>
                     )
