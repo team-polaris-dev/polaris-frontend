@@ -11,16 +11,20 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { MessageSquare, Users, Activity, Gauge, Timer, Repeat } from 'lucide-react'
+import { MessageSquare, Users, Activity, Gauge, Clock, Repeat, X } from 'lucide-react'
 
 import {
   useAnalyticsIntents,
+  useAnalyticsLatency,
   useAnalyticsOverview,
+  useAnalyticsSession,
   useAnalyticsSessions,
   useAnalyticsTools,
   useAnalyticsUsers,
   useAnalyticsVolume,
 } from '../../lib/hooks/useJob'
+
+const fmtMs = (v?: number | null) => (v == null ? '—' : `${v}ms`)
 
 const BLUE = '#2563eb'
 const EMERALD = '#10b981'
@@ -35,6 +39,9 @@ export default function AnalyticsPage() {
   const tools = useAnalyticsTools()
   const users = useAnalyticsUsers()
   const sessions = useAnalyticsSessions()
+  const latency = useAnalyticsLatency()
+  const [openSession, setOpenSession] = useState<string | null>(null)
+  const sessionDetail = useAnalyticsSession(openSession)
 
   const o = overview.data
 
@@ -63,25 +70,28 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* KPI 카드 */}
+      {/* KPI 카드 — 핵심 지표 (활성 사용자 · 품질 · 지연) */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <Kpi icon={<Users className="w-4 h-4" />} label="총 사용자" value={o?.total_users} />
-        <Kpi icon={<MessageSquare className="w-4 h-4" />} label="총 대화(세션)" value={o?.total_sessions} />
-        <Kpi icon={<MessageSquare className="w-4 h-4" />} label="총 메시지" value={o?.total_messages} />
-        <Kpi icon={<Activity className="w-4 h-4" />} label="활성 사용자(7일)" value={o?.active_users_7d} />
+        <Kpi icon={<Activity className="w-4 h-4" />} label="DAU (1일)" value={o?.dau} />
+        <Kpi icon={<Activity className="w-4 h-4" />} label="WAU (7일)" value={o?.wau} />
+        <Kpi icon={<Activity className="w-4 h-4" />} label="MAU (30일)" value={o?.mau} />
         <Kpi
           icon={<Gauge className="w-4 h-4" />}
           label="RAG 충분율"
           value={o?.sufficient_rate != null ? `${Math.round(o.sufficient_rate * 100)}%` : '—'}
         />
         <Kpi
-          icon={<Timer className="w-4 h-4" />}
-          label="평균 응답(ms)"
-          value={o?.avg_latency_ms ?? '—'}
+          icon={<Clock className="w-4 h-4" />}
+          label="p95 응답"
+          value={latency.data ? fmtMs(latency.data.p95) : '…'}
         />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* KPI 카드 — 볼륨 · 대화 깊이 */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <Kpi small icon={<MessageSquare className="w-4 h-4" />} label="총 대화(세션)" value={o?.total_sessions} />
+        <Kpi small icon={<MessageSquare className="w-4 h-4" />} label="총 메시지" value={o?.total_messages} />
         <Kpi small label="세션당 메시지" value={o?.avg_messages_per_session} />
         <Kpi small label="사용자당 세션" value={o?.avg_sessions_per_user} />
         <Kpi
@@ -110,6 +120,23 @@ export default function AnalyticsPage() {
               <Line type="monotone" dataKey="sessions" name="세션" stroke={EMERALD} strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="active_users" name="활성유저" stroke={AMBER} strokeWidth={2} dot={false} />
             </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      {/* 응답 지연 분포 — 평균 대신 분위수 + 히스토그램 */}
+      <Card
+        title={`응답 지연 분포 — p50 ${fmtMs(latency.data?.p50)} · p90 ${fmtMs(latency.data?.p90)} · p95 ${fmtMs(latency.data?.p95)} · p99 ${fmtMs(latency.data?.p99)} (n=${latency.data?.count ?? 0})`}
+      >
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={latency.data?.buckets ?? []} margin={{ top: 8, right: 12, bottom: 0, left: -16 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#94a3b833" />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+              <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} allowDecimals={false} />
+              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+              <Bar dataKey="count" name="응답 수" fill={EMERALD} radius={[4, 4, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </Card>
@@ -165,8 +192,8 @@ export default function AnalyticsPage() {
           />
         </Card>
 
-        {/* 최근 세션 */}
-        <Card title="최근 세션">
+        {/* 최근 세션 — 행 클릭 시 대화 원문 모달 */}
+        <Card title="최근 세션 (행 클릭 시 대화 원문)">
           <Table
             head={['세션', '사용자', '메시지', '마지막 의도', '시각']}
             rows={(sessions.data ?? []).map((s) => [
@@ -177,9 +204,67 @@ export default function AnalyticsPage() {
               s.last_at ? new Date(s.last_at).toLocaleString('ko-KR') : '—',
             ])}
             empty="세션 없음"
+            onRowClick={(i) => {
+              const s = sessions.data?.[i]
+              if (s) setOpenSession(s.session_id)
+            }}
           />
         </Card>
       </div>
+
+      {openSession && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setOpenSession(null)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="text-sm font-semibold">세션 대화 — {openSession.slice(0, 8)}</div>
+              <button
+                type="button"
+                onClick={() => setOpenSession(null)}
+                className="p-1 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                aria-label="닫기"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto p-5 space-y-3">
+              {sessionDetail.isLoading && <div className="text-sm text-slate-400">불러오는 중…</div>}
+              {!sessionDetail.isLoading && (sessionDetail.data?.length ?? 0) === 0 && (
+                <div className="text-sm text-slate-400">메시지가 없습니다.</div>
+              )}
+              {(sessionDetail.data ?? []).map((m) => (
+                <div
+                  key={m.message_id}
+                  className={
+                    'rounded-lg border p-3 text-sm ' +
+                    (m.role === 'user'
+                      ? 'border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-950/30'
+                      : 'border-slate-200 dark:border-slate-800')
+                  }
+                >
+                  <div className="flex items-center gap-2 mb-1 text-xs text-slate-500">
+                    <span className="font-medium">{m.role === 'user' ? '사용자' : '어시스턴트'}</span>
+                    {m.intent && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">{m.intent}</span>
+                    )}
+                    <span className="ml-auto">
+                      {m.created_at ? new Date(m.created_at).toLocaleString('ko-KR') : ''}
+                    </span>
+                  </div>
+                  <div className="whitespace-pre-wrap break-words text-slate-700 dark:text-slate-200">
+                    {m.content}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -217,7 +302,17 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   )
 }
 
-function Table({ head, rows, empty }: { head: string[]; rows: string[][]; empty: string }) {
+function Table({
+  head,
+  rows,
+  empty,
+  onRowClick,
+}: {
+  head: string[]
+  rows: string[][]
+  empty: string
+  onRowClick?: (i: number) => void
+}) {
   return (
     <table className="w-full text-sm">
       <thead className="text-slate-500 text-xs">
@@ -232,7 +327,11 @@ function Table({ head, rows, empty }: { head: string[]; rows: string[][]; empty:
           <tr><td colSpan={head.length} className="py-4 text-center text-slate-400">{empty}</td></tr>
         )}
         {rows.map((r, i) => (
-          <tr key={i}>
+          <tr
+            key={i}
+            onClick={onRowClick ? () => onRowClick(i) : undefined}
+            className={onRowClick ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50' : ''}
+          >
             {r.map((cell, j) => (
               <td key={j} className="py-2 text-slate-700 dark:text-slate-300 font-mono text-xs">{cell}</td>
             ))}

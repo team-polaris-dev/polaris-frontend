@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { Activity, BarChart3, Database, History, ShieldCheck, Workflow, LogOut } from 'lucide-react'
 import { clearAdminToken } from '../../lib/api/admin'
+import ThemeToggle from '../../components/ThemeToggle'
 
 const NAV = [
   { to: '/admin/pipeline',  label: '파이프라인', icon: Workflow },
@@ -19,9 +20,12 @@ export default function AdminLayout() {
   return (
     <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <aside className="w-60 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-col">
-        <div className="flex items-center gap-2 mb-6">
-          <Activity className="w-5 h-5 text-blue-600" />
-          <div className="text-sm font-semibold">POLARIS 관리자</div>
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-2">
+            <Activity className="w-5 h-5 text-blue-600" />
+            <div className="text-sm font-semibold">POLARIS 관리자</div>
+          </div>
+          <ThemeToggle />
         </div>
         <nav className="space-y-1 flex-1">
           {NAV.map(({ to, label, icon: Icon }) => (
