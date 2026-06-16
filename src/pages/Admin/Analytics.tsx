@@ -31,6 +31,19 @@ const EMERALD = '#10b981'
 const AMBER = '#f59e0b'
 const INTENT_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#ef4444', '#84cc16', '#6366f1', '#14b8a6', '#f97316', '#a855f7']
 
+// intent 코드 → 한국어 라벨. 미정의 값은 원문 그대로 노출(tickFormatter fallback).
+const INTENT_LABELS: Record<string, string> = {
+  ctx: '정보검색(RAG)',
+  direct: '단순응답',
+  dart_lookup: '공시 조회',
+  finance_compare: '재무 비교',
+  supply_chain: '공급망',
+  graph_query: '관계망 조회',
+  company_profile: '기업 개요',
+  small_talk: '잡담',
+  unknown: '미분류',
+}
+
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30)
   const overview = useAnalyticsOverview()
@@ -149,8 +162,17 @@ export default function AnalyticsPage() {
               <BarChart data={intents.data ?? []} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#94a3b833" horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8' }} allowDecimals={false} />
-                <YAxis type="category" dataKey="intent" tick={{ fontSize: 11, fill: '#94a3b8' }} width={110} />
-                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                <YAxis
+                  type="category"
+                  dataKey="intent"
+                  tick={{ fontSize: 11, fill: '#94a3b8' }}
+                  width={120}
+                  tickFormatter={(v) => INTENT_LABELS[String(v)] ?? String(v)}
+                />
+                <Tooltip
+                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                  labelFormatter={(v) => INTENT_LABELS[String(v)] ?? String(v)}
+                />
                 <Bar dataKey="count" name="건수" radius={[0, 4, 4, 0]}>
                   {(intents.data ?? []).map((_, i) => (
                     <Cell key={i} fill={INTENT_COLORS[i % INTENT_COLORS.length]} />
