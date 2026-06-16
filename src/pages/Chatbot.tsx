@@ -13,6 +13,7 @@ import {
   PanelRightOpen,
   ChevronDown,
   ExternalLink,
+  GripVertical,
   LogOut,
 } from 'lucide-react'
 import StarField from '../components/StarField'
@@ -33,7 +34,6 @@ import { API_BASE, getUser, clearUser } from '../lib/auth'
 type Role = 'user' | 'assistant'
 // 우측 패널은 '원본 문서'만 — 관계도는 채팅 중앙에 별자리로 인라인 표시한다.
 type PanelKey = 'documents'
-type Level = 'beginner' | 'expert'
 
 interface GraphData {
   nodes: GNode[]
@@ -75,6 +75,9 @@ const hasDocs = (m?: { documents?: DocItem[] }) => !!m?.documents?.length
 // DART 공식 공시 뷰어 URL — 14자리 접수번호(rcept_no)로 결정적으로 만들 수 있다.
 const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}`
 
+// 새로고침해도 현재 대화를 유지하기 위해 활성 세션 ID 를 사용자별로 보관한다.
+const sessionStorageKey = (uid?: string) => `polaris_session:${uid || 'anon'}`
+
 const GREETING: Message = {
   id: 0,
   role: 'assistant',
@@ -93,7 +96,6 @@ export default function ChatApp() {
   const [rightOpen, setRightOpen] = useState(false)
   const [inputFocused, setInputFocused] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [level, setLevel] = useState<Level>('beginner')
 
   // 우측 패널 상태 (원본 문서 전용)
   const [activeMsgId, setActiveMsgId] = useState<number | null>(null)
@@ -101,8 +103,10 @@ export default function ChatApp() {
   const [openDoc, setOpenDoc] = useState<string | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [sessionId, setSessionId] = useState(() => `session_${Date.now()}`)
-  const [panelWidth, setPanelWidth] = useState(() => Math.round(window.innerWidth * 0.4))
+  const [sessionId, setSessionId] = useState(
+    () => localStorage.getItem(sessionStorageKey(user?.user_id)) || `session_${Date.now()}`,
+  )
+  const [panelWidth, setPanelWidth] = useState(() => Math.min(360, Math.round(window.innerWidth * 0.28)))
   const isDragging = useRef(false)
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
@@ -171,6 +175,20 @@ export default function ChatApp() {
     setDrawerOpen(false)
     setSessionId(`session_${Date.now()}`)
   }, [])
+
+  // 활성 세션 ID 보관 → 새로고침해도 같은 대화로 돌아온다.
+  useEffect(() => {
+    if (user) localStorage.setItem(sessionStorageKey(user.user_id), sessionId)
+  }, [user, sessionId])
+
+  // 첫 마운트 때 저장된 세션이 있으면 그 대화 기록을 복원(1회만).
+  const didRestore = useRef(false)
+  useEffect(() => {
+    if (didRestore.current || !user) return
+    didRestore.current = true
+    const saved = localStorage.getItem(sessionStorageKey(user.user_id))
+    if (saved) loadSession(saved)
+  }, [user, loadSession])
 
   const handleLogout = useCallback(() => {
     clearUser()
@@ -254,7 +272,7 @@ export default function ChatApp() {
           user_id: user.user_id,
           message: text,
           thread_id: sessionId,
-          level,
+          level: 'beginner',
         }),
       })
       if (!response.ok) throw new Error(`API 오류: ${response.status}`)
@@ -531,31 +549,6 @@ export default function ChatApp() {
               }`}
             >
               <div className="mx-auto max-w-3xl">
-                <div className="mb-2 flex justify-end">
-                  <div className="relative inline-flex select-none rounded-full border border-slate-200 bg-white/70 p-0.5 text-[11px] font-medium backdrop-blur dark:border-white/10 dark:bg-white/[0.04]">
-                    <span
-                      className="absolute bottom-0.5 top-0.5 w-[calc(50%-2px)] rounded-full bg-blue-600 shadow-sm shadow-blue-600/30 transition-transform duration-300 ease-out"
-                      style={{ transform: level === 'expert' ? 'translateX(100%)' : 'translateX(0)' }}
-                    />
-                    <button
-                      onClick={() => setLevel('beginner')}
-                      className={`relative z-10 w-12 rounded-full py-1 transition-colors ${
-                        level === 'beginner' ? 'text-white' : 'text-slate-500 dark:text-slate-400'
-                      }`}
-                    >
-                      초보
-                    </button>
-                    <button
-                      onClick={() => setLevel('expert')}
-                      className={`relative z-10 w-12 rounded-full py-1 transition-colors ${
-                        level === 'expert' ? 'text-white' : 'text-slate-500 dark:text-slate-400'
-                      }`}
-                    >
-                      전문가
-                    </button>
-                  </div>
-                </div>
-
                 <div className={`polaris-glow ${inputFocused || loading ? 'is-active' : ''}`}>
                   <div className="polaris-glow-inner flex items-end gap-2 bg-white p-2 dark:bg-[#0E0A24]">
                     <textarea
@@ -595,9 +588,14 @@ export default function ChatApp() {
         {showRight && (
           <div
             onMouseDown={onResizeStart}
+            title="드래그하여 패널 너비 조절"
             className="group relative z-20 w-2 shrink-0 cursor-col-resize"
           >
             <div className="absolute inset-y-0 left-0.5 w-px bg-slate-200 transition-colors group-hover:bg-blue-400 dark:bg-white/10 dark:group-hover:bg-blue-400/50" />
+            {/* 드래그 가능 표시 — 가운데 그립 잡이 */}
+            <div className="pointer-events-none absolute left-1/2 top-1/2 grid h-9 w-5 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-sm transition-colors group-hover:border-blue-400 group-hover:text-blue-500 dark:border-white/10 dark:bg-[#0B0820] dark:text-slate-500 dark:group-hover:border-blue-400/50">
+              <GripVertical size={13} />
+            </div>
           </div>
         )}
 
