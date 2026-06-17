@@ -14,21 +14,25 @@ const STEPS = [
   '답변 작성 중',
 ]
 
-// 흐르는 듯한 별자리 좌표 + 잇는 선(순서대로 그려짐)
+// 북두칠성(큰곰자리 국자) — 사발 4개 + 손잡이 3개
+// 0 Dubhe, 1 Merak, 2 Phecda, 3 Megrez(손잡이 연결), 4 Alioth, 5 Mizar, 6 Alkaid
 const STARS = [
-  { x: 28, y: 78, r: 2.8, spike: false },
-  { x: 66, y: 40, r: 3, spike: false },
-  { x: 104, y: 58, r: 4.6, spike: true }, // 으뜸별
-  { x: 142, y: 26, r: 3.4, spike: true },
-  { x: 178, y: 60, r: 2.8, spike: false },
-  { x: 120, y: 92, r: 2.4, spike: false },
+  { x: 172, y: 30, r: 3.6, spike: true },  // Dubhe — 으뜸별(끝)
+  { x: 178, y: 70, r: 3.0, spike: false }, // Merak
+  { x: 134, y: 80, r: 2.7, spike: false }, // Phecda
+  { x: 128, y: 40, r: 2.8, spike: false }, // Megrez
+  { x: 96,  y: 48, r: 3.4, spike: true },  // Alioth — 밝은 별
+  { x: 62,  y: 62, r: 3.0, spike: false }, // Mizar
+  { x: 26,  y: 86, r: 3.3, spike: true },  // Alkaid — 손잡이 끝
 ]
+// 한 줄로 이어지는 열린 국자 — 자루 끝부터 사발을 한 붓에 그린다(닫지 않음, 위쪽은 열림)
 const LINKS: [number, number][] = [
-  [0, 1],
-  [1, 2],
-  [2, 3],
-  [3, 4],
-  [2, 5],
+  [6, 5], // Alkaid–Mizar   (손잡이)
+  [5, 4], // Mizar–Alioth   (손잡이)
+  [4, 3], // Alioth–Megrez  (손잡이→사발)
+  [3, 2], // Megrez–Phecda  (사발 안쪽 내려감)
+  [2, 1], // Phecda–Merak   (사발 바닥)
+  [1, 0], // Merak–Dubhe    (사발 바깥 올라감)
 ]
 
 export default function LoadingConstellation() {
