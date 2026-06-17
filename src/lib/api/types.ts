@@ -267,6 +267,9 @@ export interface AnalyticsOverview {
   user_messages: number
   assistant_messages: number
   active_users_7d: number
+  dau: number
+  wau: number
+  mau: number
   avg_messages_per_session: number
   avg_sessions_per_user: number
   sufficient_rate: number | null
@@ -307,4 +310,28 @@ export interface RecentSession {
   last_at: string | null
   message_count: number
   last_intent: string | null
+}
+
+/** GET /api/admin/analytics/latency — assistant 응답 지연 분포 + 히스토그램 */
+export interface LatencyBucket {
+  label: string
+  count: number
+}
+
+export interface LatencyStats {
+  count: number
+  p50: number | null
+  p90: number | null
+  p95: number | null
+  p99: number | null
+  buckets: LatencyBucket[]
+}
+
+/** GET /api/admin/analytics/sessions/{id} — 세션 대화 원문 (chat_store.list_messages) */
+export interface SessionMessage {
+  message_id: number
+  role: string
+  content: string
+  intent: string
+  created_at: string
 }

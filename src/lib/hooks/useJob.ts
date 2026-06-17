@@ -252,3 +252,19 @@ export function useAnalyticsSessions(limit = 15) {
     refetchInterval: 30_000,
   })
 }
+
+export function useAnalyticsLatency() {
+  return useQuery({
+    queryKey: ['admin', 'analytics', 'latency'],
+    queryFn: () => adminApi.analyticsLatency(),
+    refetchInterval: 60_000,
+  })
+}
+
+export function useAnalyticsSession(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['admin', 'analytics', 'session', sessionId],
+    queryFn: () => adminApi.analyticsSession(sessionId!),
+    enabled: !!sessionId,
+  })
+}

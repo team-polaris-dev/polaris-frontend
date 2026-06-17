@@ -1,8 +1,9 @@
 // src/lib/auth.ts — 사용자이름 기반 단순 로그인 + localStorage 세션 보관
 // 백엔드(/api/login)에 사용자이름을 보내고, 처음이면 자동 회원가입된다.
 
-// 기존 Chatbot.tsx 와 동일한 규칙: 빌드시 VITE_API_BASE_URL, 없으면 '/api' 프록시.
-export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || '/api'
+// 기존 Chatbot.tsx 와 동일한 규칙: 빌드시 VITE_API_BASE_URL, 없으면 '' (상대경로).
+// 호출부가 풀 경로 `/api/...` 를 직접 쓰므로 여기서 '/api' 를 또 붙이면 `/api/api/...` 가 된다.
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || ''
 
 const STORAGE_KEY = 'polaris_user'
 

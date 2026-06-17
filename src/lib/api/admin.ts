@@ -21,6 +21,8 @@ import type {
   IntentCount,
   JobCreateRequest,
   JobResponse,
+  LatencyStats,
+  SessionMessage,
   QcJudgeRequest,
   QcJudgment,
   QcReport,
@@ -31,7 +33,8 @@ import type {
   VolumePoint,
 } from './types'
 
-const BASE = ((import.meta as any).env?.VITE_API_BASE_URL as string | undefined) ?? '/api'
+// auth.ts 와 동일 규칙: 기본값 '' (상대경로). 호출부가 풀 경로 `/api/...` 를 직접 쓴다.
+const BASE = ((import.meta as any).env?.VITE_API_BASE_URL as string | undefined) ?? ''
 
 export function getAdminToken(): string {
   return localStorage.getItem('adminToken') ?? ''
@@ -46,7 +49,7 @@ export function clearAdminToken(): void {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}/admin${path}`, {
+  const res = await fetch(`${BASE}/api/admin${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -135,4 +138,7 @@ export const adminApi = {
   analyticsTools: () => request<ToolCount[]>('/analytics/tools'),
   analyticsUsers: (limit = 10) => request<TopUser[]>(`/analytics/users?limit=${limit}`),
   analyticsSessions: (limit = 15) => request<RecentSession[]>(`/analytics/sessions?limit=${limit}`),
+  analyticsLatency: () => request<LatencyStats>('/analytics/latency'),
+  analyticsSession: (id: string) =>
+    request<SessionMessage[]>(`/analytics/sessions/${encodeURIComponent(id)}`),
 }
