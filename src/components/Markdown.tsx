@@ -141,6 +141,19 @@ export default function Markdown({ text }: { text: string }) {
       continue
     }
 
+    if (/^\s*---+\s*$/.test(line)) {
+      flushPara()
+      flushList()
+      blocks.push(
+        <hr
+          key={`hr-${blocks.length}`}
+          className="my-1 border-none border-t border-slate-200 dark:border-white/[0.08]"
+        />,
+      )
+      i++
+      continue
+    }
+
     if (line.trim() === '') {
       flushPara()
       flushList()
