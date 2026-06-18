@@ -128,7 +128,7 @@ export const adminApi = {
     request<CancelResponse>(`/pipeline/jobs/${jobId}/cancel`, { method: 'POST' }),
   streamUrl: (jobId: string) => {
     const token = encodeURIComponent(getAdminToken())
-    return `${BASE}/admin/pipeline/jobs/${jobId}/stream?token=${token}`
+    return `${BASE}/api/admin/pipeline/jobs/${jobId}/stream?token=${token}`
   },
 
   // ===== 챗봇 통계 =====
