@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useReducer } from 'react'
+import { useEffect, useMemo, useRef, useReducer, useState } from 'react'
 import {
   forceSimulation,
   forceManyBody,
@@ -9,6 +9,7 @@ import {
   SimulationLinkDatum,
 } from 'd3-force'
 import type { GNode, GEdge } from './NetworkGraph'
+import { useTheme } from '../theme/ThemeContext'
 
 /* ── 상수 ── */
 const REL_COLOR: Record<string, string> = {
@@ -31,6 +32,18 @@ const REL_LABEL: Record<string, string> = {
 }
 const relColor = (t: string) => REL_COLOR[t] || '#9ec3ff'
 const relLabel = (t: string) => REL_LABEL[t] || t
+
+/* 라이트 모드 배색 — 다크용 밝은 별색을 밝은 배경에서도 읽히도록 진하게 변환한다.
+   흰색(허브)은 짙은 슬레이트(#1e293b)로, 나머지는 어두운 남색 쪽으로 42% 섞어 채도를 살린다. */
+const _hex = (h: string) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255] }
+const _toHex = (r: number, g: number, b: number) =>
+  '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
+const _mix = (a: string, b: string, t: number) => {
+  const A = _hex(a), B = _hex(b)
+  return _toHex(A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t)
+}
+const forLight = (hex: string) =>
+  hex.toLowerCase() === '#ffffff' ? '#1e293b' : _mix(hex, '#0b1220', 0.42)
 
 /* 라벨 충돌 해소 — 박스들을 수직으로 밀어 겹침을 푼다. 짧은 라벨이라
    몇 번의 패스로 수렴한다. (live 좌표라 매 렌더 호출되지만 개수가 적어 가볍다) */
@@ -114,6 +127,11 @@ interface Props {
 
 /* ── 컴포넌트 ── */
 export default function Constellation({ nodes, edges, panelMode = false }: Props) {
+  /* 테마 — 라이트 모드에선 별·선·라벨을 진한 블루/슬레이트로 변환(밝은 배경 가독성). */
+  const { theme } = useTheme()
+  const dark = theme === 'dark'
+  const tone = (c: string) => (dark ? c : forLight(c))
+
   /* refs */
   const svgRef    = useRef<SVGSVGElement>(null)
   const simRef    = useRef<ReturnType<typeof forceSimulation<D3Node>> | null>(null)
@@ -129,6 +147,11 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
       bump()
     })
   }
+
+  /* 줌/패닝 — viewBox 를 직접 바꾼다(아래 toSvg 가 getScreenCTM 기반이라 줌/패닝 후에도
+     노드 드래그 좌표가 자동 보정됨). panRef 는 빈 공간 드래그(패닝) 추적용. */
+  const [vb, setVb] = useState(() => ({ x: 0, y: 0, w: VW, h: VH }))
+  const panRef = useRef<{ cx: number; cy: number; vb: { x: number; y: number; w: number; h: number } } | null>(null)
 
 
   /* ── 데이터 준비 ── */
@@ -255,12 +278,24 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
   }
   const onMove = (clientX: number, clientY: number) => {
     const node = dragNode.current
-    if (!node) return
-    const { x, y } = toSvg(clientX, clientY)
-    // fx/fy 만 갱신 → 다음 tick 에서 노드·엣지가 한 번에 같은 좌표로 그려짐
-    node.fx = x; node.fy = y
-    node.x = x; node.y = y
-    scheduleRender()
+    if (node) {
+      const { x, y } = toSvg(clientX, clientY)
+      // fx/fy 만 갱신 → 다음 tick 에서 노드·엣지가 한 번에 같은 좌표로 그려짐
+      node.fx = x; node.fy = y
+      node.x = x; node.y = y
+      scheduleRender()
+      return
+    }
+    // 빈 공간 드래그 → 패닝(viewBox 이동). 화면 이동량을 viewBox 단위로 환산.
+    const pan = panRef.current
+    if (pan) {
+      const svg = svgRef.current
+      if (!svg) return
+      const rect = svg.getBoundingClientRect()
+      const dx = (clientX - pan.cx) * pan.vb.w / rect.width
+      const dy = (clientY - pan.cy) * pan.vb.h / rect.height
+      setVb({ x: pan.vb.x - dx, y: pan.vb.y - dy, w: pan.vb.w, h: pan.vb.h })
+    }
   }
   const endDrag = () => {
     if (dragNode.current) {
@@ -268,8 +303,45 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
       dragNode.current.fy = null
     }
     dragNode.current = null
+    panRef.current = null
     simRef.current?.alphaTarget(0)
   }
+
+  /* 데이터(노드 수)에 따라 base viewBox(vw/vh)가 바뀌면 화면을 초기 상태로 맞춘다. */
+  useEffect(() => { setVb({ x: 0, y: 0, w: vw, h: vh }) }, [vw, vh])
+
+  /* 휠 줌 — 커서 위치를 고정점으로 확대/축소. React onWheel 은 passive 라 preventDefault 가
+     안 먹어서, 네이티브 리스너를 non-passive 로 직접 단다(페이지 스크롤 방지). */
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || !panelMode) return
+    const MIN_W = vw * 0.2, MAX_W = vw * 2.5  // 최대 5배 확대 ~ 2.5배 축소
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const cur = svg.viewBox.baseVal
+      const { x: wx, y: wy } = toSvg(e.clientX, e.clientY)
+      const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12
+      const newW = Math.max(MIN_W, Math.min(MAX_W, cur.width * factor))
+      const newH = cur.height * (newW / cur.width)
+      const fx = (wx - cur.x) / cur.width
+      const fy = (wy - cur.y) / cur.height
+      setVb({ x: wx - fx * newW, y: wy - fy * newH, w: newW, h: newH })
+    }
+    svg.addEventListener('wheel', onWheel, { passive: false })
+    return () => svg.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vw, vh, panelMode])
+
+  /* 줌 버튼 — 중심 고정 확대/축소. resetView 는 전체보기로 복귀. */
+  const zoomByCenter = (factor: number) => {
+    const MIN_W = vw * 0.2, MAX_W = vw * 2.5
+    setVb(v => {
+      const newW = Math.max(MIN_W, Math.min(MAX_W, v.w * factor))
+      const newH = v.h * (newW / v.w)
+      return { x: v.x + v.w / 2 - newW / 2, y: v.y + v.h / 2 - newH / 2, w: newW, h: newH }
+    })
+  }
+  const resetView = () => setVb({ x: 0, y: 0, w: vw, h: vh })
 
   if (!d3Nodes.length) return null
 
@@ -294,7 +366,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
   /* ── 선택된 엣지 메타 (클릭 시 하단 표시용) ── */
 
   return (
-    <div className={panelMode ? 'flex h-full flex-col overflow-hidden' : 'relative w-full'}>
+    <div className={panelMode ? 'relative flex h-full flex-col overflow-hidden' : 'relative w-full'}>
       <style>{`
         @keyframes cnsPop     { 0%{opacity:0;transform:scale(0)} 55%{opacity:1;transform:scale(1.5)} 100%{opacity:1;transform:scale(1)} }
         @keyframes cnsDraw    { from{stroke-dashoffset:var(--len)} to{stroke-dashoffset:0} }
@@ -314,33 +386,56 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
         }
       `}</style>
 
-      <span className={`pointer-events-none z-10 text-[10px] font-medium tracking-wider text-slate-400/80 ${panelMode ? 'shrink-0 px-3 pt-2' : 'absolute left-1 top-1'}`}>
+      <span className={`pointer-events-none z-10 text-[10px] font-medium tracking-wider text-slate-500/90 dark:text-slate-400/80 ${panelMode ? 'shrink-0 px-3 pt-2' : 'absolute left-1 top-1'}`}>
         공급망 · {total}개
       </span>
 
+      {/* 줌 컨트롤 — 휠/드래그 외에 버튼으로도 확대·축소·전체보기 */}
+      {panelMode && (
+        <div className="absolute right-2 top-2 z-20 flex flex-col gap-1">
+          {([['+', () => zoomByCenter(1 / 1.3), '확대', 'text-base'],
+             ['−', () => zoomByCenter(1.3), '축소', 'text-base'],
+             ['⟲', resetView, '전체 보기', 'text-sm']] as const).map(([sym, fn, label, fz]) => (
+            <button key={label} type="button" onClick={fn} aria-label={label}
+              className={`flex h-7 w-7 items-center justify-center rounded-md leading-none backdrop-blur ${fz} ${
+                dark
+                  ? 'bg-white/10 text-slate-100 hover:bg-white/20'
+                  : 'bg-slate-900/5 text-slate-600 ring-1 ring-slate-900/10 hover:bg-slate-900/10'
+              }`}>{sym}</button>
+          ))}
+        </div>
+      )}
+
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${vw} ${vh}`}
+        viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
         className={panelMode ? 'min-h-0 w-full flex-1' : 'h-[280px] w-full'}
-        style={{ userSelect: 'none', touchAction: 'none', cursor: dragNode.current ? 'grabbing' : 'default' }}
+        style={{ userSelect: 'none', touchAction: 'none', cursor: !panelMode ? 'default' : (dragNode.current || panRef.current) ? 'grabbing' : 'grab' }}
+        onPointerDown={e => {
+          // 노드 위 클릭은 노드 드래그(아래 g 의 핸들러가 dragNode 설정)이므로 패닝하지 않는다.
+          if (!panelMode || dragNode.current) return
+          e.currentTarget.setPointerCapture(e.pointerId)
+          panRef.current = { cx: e.clientX, cy: e.clientY, vb }
+        }}
         onPointerMove={e => onMove(e.clientX, e.clientY)}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
       >
         <defs>
+          {/* 라이트 모드에선 흰색 글로우·스파이크가 안 보이므로 블루 계열로 */}
           <radialGradient id="cnsGlow">
-            <stop offset="0%"   stopColor="white" stopOpacity={0.55} />
-            <stop offset="100%" stopColor="white" stopOpacity={0}    />
+            <stop offset="0%"   stopColor={dark ? 'white' : '#3b82f6'} stopOpacity={dark ? 0.55 : 0.22} />
+            <stop offset="100%" stopColor={dark ? 'white' : '#3b82f6'} stopOpacity={0} />
           </radialGradient>
           <linearGradient id="spkH" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%"   stopColor="white" stopOpacity={0}   />
-            <stop offset="50%"  stopColor="white" stopOpacity={0.85}/>
-            <stop offset="100%" stopColor="white" stopOpacity={0}   />
+            <stop offset="0%"   stopColor={dark ? 'white' : '#2563eb'} stopOpacity={0} />
+            <stop offset="50%"  stopColor={dark ? 'white' : '#2563eb'} stopOpacity={dark ? 0.85 : 0.6} />
+            <stop offset="100%" stopColor={dark ? 'white' : '#2563eb'} stopOpacity={0} />
           </linearGradient>
           <linearGradient id="spkV" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stopColor="white" stopOpacity={0}   />
-            <stop offset="50%"  stopColor="white" stopOpacity={0.85}/>
-            <stop offset="100%" stopColor="white" stopOpacity={0}   />
+            <stop offset="0%"   stopColor={dark ? 'white' : '#2563eb'} stopOpacity={0} />
+            <stop offset="50%"  stopColor={dark ? 'white' : '#2563eb'} stopOpacity={dark ? 0.85 : 0.6} />
+            <stop offset="100%" stopColor={dark ? 'white' : '#2563eb'} stopOpacity={0} />
           </linearGradient>
         </defs>
 
@@ -349,7 +444,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
           const s = nodeById.get(p.ids[0])
           const t = nodeById.get(p.ids[1])
           if (!s || !t || s.x == null || s.y == null || t.x == null || t.y == null) return null
-          const color = relColor(p.types[0])
+          const color = tone(relColor(p.types[0]))
           return (
             <g key={p.key}>
               {/* 글로우 라인 */}
@@ -375,10 +470,10 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
             let f = 0.5
             if (s.isHub && !t.isHub) f = 0.68
             else if (t.isHub && !s.isHub) f = 0.32
-            const segs = p.types.map(ty => ({ text: relLabel(ty), color: relColor(ty) }))
+            const segs = p.types.map(ty => ({ text: relLabel(ty), color: tone(relColor(ty)) }))
             const full = segs.map(sg => sg.text).join(' · ')
             items.push({
-              key: p.key, color: relColor(p.types[0]), text: full,
+              key: p.key, color: tone(relColor(p.types[0])), text: full,
               segs,
               x: s.x + (t.x - s.x) * f,
               y: s.y + (t.y - s.y) * f - 5,
@@ -394,7 +489,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
               {b.segs.map((sg, si) => (
                 <tspan key={si}
                   fill={sg.color}
-                  style={{ paintOrder: 'stroke', stroke: '#0b0820', strokeWidth: 3, strokeLinejoin: 'round' } as React.CSSProperties}>
+                  style={{ paintOrder: 'stroke', stroke: dark ? '#0b0820' : '#ffffff', strokeWidth: 3, strokeLinejoin: 'round' } as React.CSSProperties}>
                   {si > 0 ? ' · ' : ''}{sg.text}
                 </tspan>
               ))}
@@ -430,8 +525,9 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
                 </g>
               )}
               <circle cx={0} cy={0} r={node.r}
-                className="cns-star cns-twinkle fill-white"
-                stroke={node.isHub ? 'none' : node.color}
+                className="cns-star cns-twinkle"
+                fill={dark ? '#ffffff' : forLight(node.color)}
+                stroke={node.isHub ? 'none' : tone(node.color)}
                 strokeWidth={1.4} strokeOpacity={0.9}
                 style={{ animationDelay: `${node.delay}s`, ['--tw' as string]: tw }} />
               <text x={0} y={node.r + (panelMode ? 20 : 13)} textAnchor="middle"
@@ -442,7 +538,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
                   animationDelay: `${node.delay + 0.15}s`,
                   opacity: panelMode ? 0.95 : 1,
                   paintOrder: 'stroke',
-                  stroke: '#0b0820',
+                  stroke: dark ? '#0b0820' : '#ffffff',
                   strokeWidth: 3.5,
                   strokeLinejoin: 'round',
                 } as React.CSSProperties}
@@ -453,7 +549,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
                     x={0}
                     dy={li === 0 ? 0 : (panelMode ? 15 : 12)}
                     className="fill-slate-600 dark:fill-slate-200"
-                    style={panelMode ? { fill: node.color } : undefined}
+                    style={panelMode ? { fill: tone(node.color) } : undefined}
                   >
                     {ln}
                   </tspan>
@@ -468,8 +564,8 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
       {legendTypes.length > 0 && (
         <div className={`shrink-0 flex flex-wrap gap-x-4 gap-y-1.5 px-4 ${panelMode ? 'py-3 border-t border-slate-200 dark:border-white/[0.06]' : 'py-1.5'}`}>
           {legendTypes.map(t => (
-            <span key={t} className={`flex items-center gap-1.5 ${panelMode ? 'text-[13px]' : 'text-[10px]'} text-slate-400 dark:text-slate-400`}>
-              <span className={`inline-block rounded-full ${panelMode ? 'h-0.5 w-6' : 'h-px w-4'}`} style={{ backgroundColor: relColor(t), opacity: 0.9 }} />
+            <span key={t} className={`flex items-center gap-1.5 ${panelMode ? 'text-[13px]' : 'text-[10px]'} text-slate-500 dark:text-slate-400`}>
+              <span className={`inline-block rounded-full ${panelMode ? 'h-0.5 w-6' : 'h-px w-4'}`} style={{ backgroundColor: tone(relColor(t)), opacity: 0.9 }} />
               {relLabel(t)}
             </span>
           ))}
