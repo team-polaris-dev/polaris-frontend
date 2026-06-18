@@ -3,11 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowRight, User, X } from 'lucide-react'
 import StarField from '../components/StarField'
 import ThemeToggle from '../components/ThemeToggle'
-import Splash from '../components/Splash'
+import SettingsMenu from '../components/SettingsMenu'
 import { login } from '../lib/auth'
-
-// 스플래시 영상은 탭 세션당 1회만 — 새로고침/재진입 시 반복 재생 방지
-const SPLASH_KEY = 'polaris_splash_seen'
 
 // 진입화면 — 나브/검색/알림 제거. 배경(별)+문구+테마토글(아이콘)+시작하기 버튼+소년 일러스트.
 // 시작하기 클릭 → 가운데 작은 창에서 사용자이름 입력(처음이면 회원가입) →
@@ -15,12 +12,6 @@ const SPLASH_KEY = 'polaris_splash_seen'
 export default function Landing() {
   const navigate = useNavigate()
   const [leaving, setLeaving] = useState(false)
-  // 스플래시 영상 표시 여부 (세션당 1회)
-  const [showSplash, setShowSplash] = useState(
-    () => typeof window !== 'undefined' && !sessionStorage.getItem(SPLASH_KEY),
-  )
-  // 스플래시가 막 끝났을 때 콘텐츠를 떠오르며 등장시키는 플래그
-  const [justEntered, setJustEntered] = useState(false)
 
   // 로그인 모달 상태
   const [showLogin, setShowLogin] = useState(false)
@@ -63,17 +54,6 @@ export default function Landing() {
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-white text-slate-900 transition-colors duration-500 dark:bg-[#0B0820] dark:text-white">
-      {/* 랜딩 진입 전 스플래시 영상 (세션당 1회) */}
-      {showSplash && (
-        <Splash
-          onDone={() => {
-            sessionStorage.setItem(SPLASH_KEY, '1')
-            setShowSplash(false)
-            setJustEntered(true) // 콘텐츠 등장 연출 트리거
-          }}
-        />
-      )}
-
       {/* 전환 애니메이션 키프레임 */}
       <style>{`
         @keyframes polarisContentOut{to{opacity:0;transform:translateY(-14px) scale(1.05);filter:blur(2px)}}
@@ -115,7 +95,8 @@ export default function Landing() {
 
       {/* 우상단: 로고 워드마크 + 테마 토글(아이콘) */}
       <div className="absolute left-6 top-5 z-20 font-bold tracking-tight">POLARIS</div>
-      <div className="absolute right-5 top-4 z-20">
+      <div className="absolute right-5 top-4 z-20 flex items-center gap-2">
+        <SettingsMenu />
         <ThemeToggle />
       </div>
 
@@ -123,18 +104,16 @@ export default function Landing() {
       <div
         className="relative z-10 flex min-h-screen flex-col items-center justify-center px-6 text-center"
         style={{
-          animation: leaving
-            ? 'polarisContentOut 0.5s ease forwards'
-            : justEntered
-            ? 'polarisContentIn 0.8s ease-out both'
-            : undefined,
-          opacity: showSplash ? 0 : undefined, // 스플래시/페이드 동안 숨김 (플래시 방지)
+          animation: leaving ? 'polarisContentOut 0.5s ease forwards' : undefined,
         }}
       >
         <p className="mb-5 text-xs tracking-[0.4em] text-slate-400 dark:text-slate-500">
           POLARIS · 89°15&#39;
         </p>
-        <h1 className="mb-12 text-4xl font-bold sm:text-5xl">언제나 같은 자리.</h1>
+        <h1 className="mb-4 text-4xl font-bold sm:text-5xl">언제나 같은 자리.</h1>
+        <p className="mb-12 text-sm tracking-wide text-slate-400 dark:text-slate-500">
+          오늘은 잠깐, 별멍 어때요?
+        </p>
         <button
           onClick={handleStart}
           disabled={leaving}
@@ -154,7 +133,6 @@ export default function Landing() {
         className="pointer-events-none absolute bottom-0 right-0 z-0 w-[38%] max-w-xl select-none opacity-95 transition duration-500 dark:invert"
         style={{
           animation: leaving ? 'polarisContentOut 0.5s ease forwards' : undefined,
-          opacity: showSplash ? 0 : undefined,
         }}
       />
 
