@@ -67,6 +67,10 @@ interface Message {
   documents?: DocItem[]
   financials?: FinancialGroup[]
   digest?: string
+  // 답변 표시 후 별도 호출로 채우는 '핵심 사실 정리' — 받아오는 동안 true
+  digestLoading?: boolean
+  // 저장된 메시지 id (digest 후속 호출에 사용)
+  serverId?: number
 }
 interface SessionItem {
   session_id: string
@@ -337,6 +341,9 @@ export default function ChatApp() {
       const documents: DocItem[] = data.documents || []
       const financials: FinancialGroup[] = data.financials || []
 
+      // digest(핵심 사실 정리)는 답변 표시 후 별도로 받아온다. 문서가 있으면 로딩 표시.
+      const serverId: number = data.message_id || 0
+      const willLoadDigest = !!serverId && documents.length > 0
       setMessages((prev) => [
         ...prev,
         {
@@ -348,6 +355,8 @@ export default function ChatApp() {
           documents,
           financials,
           digest: data.digest || '',
+          serverId,
+          digestLoading: willLoadDigest,
         },
       ])
       // 이 답변을 타자기 효과 대상으로 지정
@@ -358,6 +367,29 @@ export default function ChatApp() {
         openPanel(msgId, 'constellation')
       } else if (documents.length > 0) {
         openPanel(msgId, 'documents')
+      }
+
+      // 답변은 이미 표시됨 — 핵심 사실 정리는 백엔드가 LLM 으로 만든 뒤 채운다(비차단).
+      if (willLoadDigest) {
+        fetch(`${API_BASE}/api/chat/digest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_id: serverId }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (loadSeqRef.current !== seq) return // 세션을 이동했으면 버린다
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === msgId ? { ...m, digest: (d && d.digest) || '', digestLoading: false } : m,
+              ),
+            )
+          })
+          .catch(() => {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === msgId ? { ...m, digestLoading: false } : m)),
+            )
+          })
       }
 
       // 사이드바 목록 갱신(새 세션이면 새로 나타나고, 제목/시간 최신화)
@@ -768,14 +800,21 @@ export default function ChatApp() {
                 hasDocs(activeData ?? undefined) ? (
                   <>
                     {/* AI 사실 정리 — 근거에서 확인되는 사실만 나열 */}
-                    {!!activeData?.digest && (
+                    {(!!activeData?.digest || activeData?.digestLoading) && (
                       <div className="mb-4">
                         <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
                           <Sparkles size={13} className="text-indigo-500" />
                           핵심 사실 정리
                         </div>
                         <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-700 shadow-sm dark:border-slate-300/30 dark:bg-slate-100 dark:text-slate-800">
-                          <Markdown text={activeData.digest} />
+                          {activeData?.digest ? (
+                            <Markdown text={activeData.digest} />
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-[12px] text-slate-400">
+                              <Sparkles size={12} className="animate-pulse text-indigo-400" />
+                              핵심 사실을 정리하는 중…
+                            </span>
+                          )}
                         </div>
                       </div>
                     )}
