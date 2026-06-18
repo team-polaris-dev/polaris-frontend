@@ -132,7 +132,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
 
 
   /* ── 데이터 준비 ── */
-  const { d3Nodes, d3Links, nodeById, linkSrcTgt, ambient, total, legendTypes, vw, vh } = useMemo(() => {
+  const { d3Nodes, d3Links, nodeById, linkSrcTgt, total, legendTypes, vw, vh } = useMemo(() => {
     const degree = new Map<string, number>()
     for (const e of edges) {
       degree.set(e.source, (degree.get(e.source) || 0) + 1)
@@ -196,13 +196,6 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
       })
     })
 
-    const ambient = Array.from({ length: 40 }, (_, i) => ({
-      id: i, x: rnd(i + 1) * vw, y: rnd(i * 2 + 3) * vh,
-      r: rnd(i * 3 + 5) * 1.1 + 0.35,
-      o: rnd(i * 4 + 9) * 0.3 + 0.08,
-      d: rnd(i * 5 + 11) * 4,
-    }))
-
     const legendTypes = [...new Set(
       edges.filter(e => keptIds.has(e.source) && keptIds.has(e.target)).map(e => e.type).filter(Boolean)
     )]
@@ -212,7 +205,7 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
       d3Links.map(l => [l.key, [l.source as string, l.target as string] as const])
     )
 
-    return { d3Nodes, d3Links, nodeById, linkSrcTgt, ambient, total: nodes.length, legendTypes, vw, vh }
+    return { d3Nodes, d3Links, nodeById, linkSrcTgt, total: nodes.length, legendTypes, vw, vh }
   }, [nodes, edges])
 
   /* ── d3 시뮬레이션 ──
@@ -350,13 +343,6 @@ export default function Constellation({ nodes, edges, panelMode = false }: Props
             <stop offset="100%" stopColor="white" stopOpacity={0}   />
           </linearGradient>
         </defs>
-
-        {/* 앰비언트 배경별 */}
-        {ambient.map(a => (
-          <circle key={`amb-${a.id}`} cx={a.x} cy={a.y} r={a.r}
-            className="cns-twinkle fill-slate-400 dark:fill-white"
-            style={{ opacity: a.o, ['--tw' as string]: `${2 + a.d}s` }} />
-        ))}
 
         {/* 관계선 — 노드 쌍마다 한 번만 그림 (중복 관계는 하나의 선으로) */}
         {linkPairs.map(p => {

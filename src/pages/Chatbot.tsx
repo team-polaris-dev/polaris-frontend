@@ -19,13 +19,14 @@ import {
 } from 'lucide-react'
 import StarField from '../components/StarField'
 import ThemeToggle from '../components/ThemeToggle'
+import SettingsMenu from '../components/SettingsMenu'
 import type { GNode, GEdge } from '../components/NetworkGraph'
 import Constellation from '../components/Constellation'
 import LoadingConstellation from '../components/LoadingConstellation'
 import Markdown from '../components/Markdown'
 import TypingMarkdown from '../components/TypingMarkdown'
 import FinancialChart, { type FinancialGroup, stripFinancialTable } from '../components/FinancialChart'
-import { GroupedDocList } from '../components/DocDrawer'
+import { SourceList } from '../components/DocDrawer'
 import { API_BASE, getUser, clearUser } from '../lib/auth'
 
 /* ──────────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ interface Message {
   graph?: GraphData
   documents?: DocItem[]
   financials?: FinancialGroup[]
+  digest?: string
 }
 interface SessionItem {
   session_id: string
@@ -87,7 +89,7 @@ const GREETING: Message = {
   id: 0,
   role: 'assistant',
   content:
-    '안녕하세요, POLARIS입니다. 기업 공시와 뉴스를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.',
+    '기업 정보를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.\n답을 기다리는 동안 잠깐 별멍도 좋아요. ✦',
 }
 
 export default function ChatApp() {
@@ -106,7 +108,6 @@ export default function ChatApp() {
   const [activeMsgId, setActiveMsgId] = useState<number | null>(null)
   const [activePanel, setActivePanel] = useState<PanelKey>('documents')
   const [openDoc, setOpenDoc] = useState<string | null>(null)
-  const [flippedId, setFlippedId] = useState<number | null>(null)
   // 방금 받은 답변만 타자기 효과로 노출 (복원 대화는 제외)
   const [typingId, setTypingId] = useState<number | null>(null)
 
@@ -166,6 +167,7 @@ export default function ChatApp() {
         graph?: GraphData
         documents?: DocItem[]
         financials?: FinancialGroup[]
+        digest?: string
       }[]
       const restored: Message[] = rows.map((r) => ({
         id: r.message_id,
@@ -175,6 +177,7 @@ export default function ChatApp() {
         graph: r.graph || { nodes: [], edges: [] },
         documents: r.documents || [],
         financials: r.financials || [],
+        digest: r.digest || '',
       }))
       setMessages(restored.length ? [GREETING, ...restored] : [GREETING])
     } catch (e) {
@@ -254,13 +257,17 @@ export default function ChatApp() {
   const availableTabs = useMemo<PanelKey[]>(() => {
     const tabs: PanelKey[] = []
     if (hasGraph(activeData ?? undefined)) tabs.push('constellation')
+    if (hasDocs(activeData ?? undefined)) tabs.push('documents')
     return tabs
   }, [activeData])
 
-  // 별자리만 표시
+  // 현재 탭이 더 이상 유효하지 않으면 첫 번째 가용 탭(별자리 우선)으로 보정.
+  // openPanel 이 명시 지정한 탭은 유효하면 그대로 둔다.
   useEffect(() => {
-    setActivePanel('constellation')
-  }, [availableTabs])
+    if (availableTabs.length && !availableTabs.includes(activePanel)) {
+      setActivePanel(availableTabs[0])
+    }
+  }, [availableTabs, activePanel])
 
   const showRight = started && rightOpen && availableTabs.length > 0
 
@@ -281,6 +288,15 @@ export default function ChatApp() {
       setRightOpen(false)
     } else {
       openPanel(msgId, 'constellation')
+    }
+  }
+
+  // 원본 문서 버튼: 같은 메시지의 문서 탭이 열려 있으면 닫고, 아니면 연다
+  const toggleDocuments = (msgId: number) => {
+    if (rightOpen && activeMsgId === msgId && activePanel === 'documents') {
+      setRightOpen(false)
+    } else {
+      openPanel(msgId, 'documents')
     }
   }
 
@@ -315,7 +331,7 @@ export default function ChatApp() {
         refreshSessions()
         return
       }
-      // data: { response, intent, panel, graph:{nodes,edges}, documents:[...], financials:[...] }
+      // data: { response, intent, panel, graph:{nodes,edges}, documents:[...], financials:[...], digest }
       const msgId = Date.now() + 1
       const graph: GraphData = data.graph || { nodes: [], edges: [] }
       const documents: DocItem[] = data.documents || []
@@ -331,6 +347,7 @@ export default function ChatApp() {
           graph,
           documents,
           financials,
+          digest: data.digest || '',
         },
       ])
       // 이 답변을 타자기 효과 대상으로 지정
@@ -365,7 +382,7 @@ export default function ChatApp() {
   }
 
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
-    constellation: { label: '별자리', icon: Network },
+    constellation: { label: '관계도', icon: Network },
     documents: { label: '원본 문서', icon: FileText },
   }
 
@@ -524,6 +541,7 @@ export default function ChatApp() {
                   <PanelRightOpen size={18} />
                 </button>
               )}
+              <SettingsMenu />
               <ThemeToggle />
             </div>
           </header>
@@ -569,90 +587,52 @@ export default function ChatApp() {
                         </span>
                         <div className="flex w-full min-w-0 max-w-[85%] flex-col items-start gap-2">
 
-                          {/* ── 플립 카드 (앞: 답변 / 뒤: 원본 문서) ── */}
-                          <div className="w-full" style={{ perspective: '1400px' }}>
-                            <div
-                              className="relative w-full transition-transform duration-500"
-                              style={{
-                                transformStyle: 'preserve-3d',
-                                transform: flippedId === m.id ? 'rotateY(180deg)' : 'rotateY(0deg)',
-                              }}
-                            >
-                              {/* 앞면 — AI 답변 */}
-                              <div
-                                className="w-full rounded-2xl rounded-tl-sm border border-slate-200 bg-white/70 px-4 py-2.5 backdrop-blur-sm dark:border-white/10 dark:bg-white/[0.04]"
-                                style={{ backfaceVisibility: 'hidden' }}
-                              >
-                                {typingId === m.id ? (
-                                  <TypingMarkdown
-                                    text={displayText}
-                                    onTick={() =>
-                                      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-                                    }
-                                    onDone={() => setTypingId(null)}
-                                  />
-                                ) : (
-                                  <Markdown text={displayText} />
-                                )}
-                                {/* 재무지표 차트 — 표 대신 답변 안에 표시 (타이핑 끝난 뒤) */}
-                                {typingId !== m.id && (!!m.financials?.length || !!m.content) && (
-                                  <FinancialChart financials={m.financials ?? []} sourceText={m.content} />
-                                )}
-                                {/* 원본 문서 플립 트리거 (버블 우하단) — 타이핑 끝난 뒤 노출 */}
-                                {typingId !== m.id && hasDocs(m) && (
-                                  <div className="mt-2 flex justify-end">
-                                    <button
-                                      onClick={() => setFlippedId(m.id)}
-                                      className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-600 transition hover:bg-sky-100 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-300 dark:hover:bg-sky-300/20"
-                                    >
-                                      <FileText size={11} /> 원본 문서 {m.documents!.length}건
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* 뒷면 — 원본 문서 목록 (스크롤 가능) */}
-                              {hasDocs(m) && (
-                                <div
-                                  className="no-scrollbar absolute inset-0 w-full overflow-y-auto rounded-2xl rounded-tl-sm border border-sky-200/70 bg-slate-50/95 px-4 py-3 backdrop-blur-sm dark:border-sky-400/20 dark:bg-[#080c18]/95"
-                                  style={{
-                                    backfaceVisibility: 'hidden',
-                                    transform: 'rotateY(180deg)',
-                                  }}
-                                >
-                                  <div className="mb-3 flex items-center justify-between gap-2">
-                                    <span className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-600 dark:text-slate-300">
-                                      <FileText size={13} className="text-sky-500" />
-                                      원본 문서 ({m.documents!.length}건)
-                                    </span>
-                                    <div className="flex items-center gap-1.5">
-                                      <button
-                                        onClick={() => setFlippedId(null)}
-                                        className="inline-flex items-center gap-1 rounded-lg bg-slate-200/70 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:bg-slate-300/70 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/20"
-                                      >
-                                        ← 답변으로
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <GroupedDocList docs={m.documents!} />
-                                </div>
-                              )}
-                            </div>
+                          {/* ── AI 답변 버블 ── */}
+                          <div className="w-full rounded-2xl rounded-tl-sm border border-slate-200 bg-white/70 px-4 py-2.5 backdrop-blur-sm dark:border-white/10 dark:bg-white/[0.04]">
+                            {typingId === m.id ? (
+                              <TypingMarkdown
+                                text={displayText}
+                                onTick={() =>
+                                  scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+                                }
+                                onDone={() => setTypingId(null)}
+                              />
+                            ) : (
+                              <Markdown text={displayText} />
+                            )}
+                            {/* 재무지표 차트 — 표 대신 답변 안에 표시 (타이핑 끝난 뒤) */}
+                            {typingId !== m.id && (!!m.financials?.length || !!m.content) && (
+                              <FinancialChart financials={m.financials ?? []} sourceText={m.content} />
+                            )}
                           </div>
 
-                          {/* 관계도 버튼 — 타이핑 끝난 뒤 노출 */}
-                          {typingId !== m.id && hasGraph(m) && (
-                            <div className="flex w-full justify-end">
-                              <button
-                                onClick={() => toggleConstellation(m.id)}
-                                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
-                                  rightOpen && activeMsgId === m.id && activePanel === 'constellation'
-                                    ? 'border-indigo-400 bg-indigo-100 text-indigo-700 dark:border-indigo-400/40 dark:bg-indigo-400/20 dark:text-indigo-200'
-                                    : 'border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-300 dark:hover:bg-indigo-400/20'
-                                }`}
-                              >
-                                <Network size={12} /> 별자리
-                              </button>
+                          {/* 근거 버튼들 — 타이핑 끝난 뒤 노출. 우측 패널 탭을 연다 */}
+                          {typingId !== m.id && (hasDocs(m) || hasGraph(m)) && (
+                            <div className="flex w-full flex-wrap justify-end gap-1.5">
+                              {hasDocs(m) && (
+                                <button
+                                  onClick={() => toggleDocuments(m.id)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'documents'
+                                      ? 'border-sky-400 bg-sky-100 text-sky-700 dark:border-sky-400/40 dark:bg-sky-400/20 dark:text-sky-200'
+                                      : 'border-sky-200 bg-sky-50 text-sky-600 hover:bg-sky-100 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-300 dark:hover:bg-sky-300/20'
+                                  }`}
+                                >
+                                  <FileText size={11} /> 원본 문서 {m.documents!.length}건
+                                </button>
+                              )}
+                              {hasGraph(m) && (
+                                <button
+                                  onClick={() => toggleConstellation(m.id)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'constellation'
+                                      ? 'border-indigo-400 bg-indigo-100 text-indigo-700 dark:border-indigo-400/40 dark:bg-indigo-400/20 dark:text-indigo-200'
+                                      : 'border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-300 dark:hover:bg-indigo-400/20'
+                                  }`}
+                                >
+                                  <Network size={12} /> 관계도
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -730,7 +710,27 @@ export default function ChatApp() {
           } ${showRight ? 'border-l opacity-100' : 'border-l-0 opacity-0'}`}
         >
           <div className="flex h-full w-full flex-col">
-            <div className="flex items-center justify-end border-b border-slate-200 px-3 pt-3 dark:border-white/[0.06]">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 pt-3 dark:border-white/[0.06]">
+              {/* 탭바 — 가용 탭이 2개 이상일 때만 노출 */}
+              <div className="mb-1 flex items-center gap-1">
+                {availableTabs.map((tab) => {
+                  const Icon = PANEL_META[tab].icon
+                  const active = activePanel === tab
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => setActivePanel(tab)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition ${
+                        active
+                          ? 'bg-slate-200/80 text-slate-700 dark:bg-white/10 dark:text-slate-100'
+                          : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/[0.06] dark:hover:text-slate-300'
+                      }`}
+                    >
+                      <Icon size={13} /> {PANEL_META[tab].label}
+                    </button>
+                  )
+                })}
+              </div>
               <button
                 onClick={() => setRightOpen(false)}
                 className="mb-1 grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 dark:hover:bg-white/10"
@@ -760,6 +760,34 @@ export default function ChatApp() {
                   />
                 ) : (
                   <p className="p-5 text-xs text-slate-400">조회된 관계도 데이터가 없습니다.</p>
+                )
+              )}
+
+              {/* ───── 원본 문서 ───── */}
+              {activePanel === 'documents' && (
+                hasDocs(activeData ?? undefined) ? (
+                  <>
+                    {/* AI 사실 정리 — 근거에서 확인되는 사실만 나열 */}
+                    {!!activeData?.digest && (
+                      <div className="mb-4">
+                        <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
+                          <Sparkles size={13} className="text-indigo-500" />
+                          핵심 사실 정리
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-700 shadow-sm dark:border-slate-300/30 dark:bg-slate-100 dark:text-slate-800">
+                          <Markdown text={activeData.digest} />
+                        </div>
+                      </div>
+                    )}
+                    {/* 출처 — 보고서명 + DART 링크 버튼만 간단히 */}
+                    <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
+                      <FileText size={13} className="text-sky-500" />
+                      출처
+                    </div>
+                    <SourceList docs={activeData!.documents!} />
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-400">조회된 원본 문서가 없습니다.</p>
                 )
               )}
             </div>
