@@ -20,20 +20,20 @@ type Step = {
 const STEPS: Step[] = [
   {
     mode: 'overview',
-    kicker: '공시 우주',
+    kicker: '공시 네트워크',
     title: '흩어진 공시를 하나의 관계망으로',
     body: '수천 건의 전자공시를 기업·인물·제품·기술 노드와 그 관계로 구조화합니다. 표로는 안 보이던 연결이 한눈에 드러납니다.',
   },
   {
     mode: 'node',
-    focusId: 'c3',
+    focusId: 'hub:0',
     kicker: '기업 중심',
-    title: '기업을 축으로 임원·제품·기술이 모인다',
-    body: '한 기업을 클릭하면 그 회사의 임원, 보유 기술, 제품이 가지처럼 펼쳐집니다. 회사의 전체 윤곽이 즉시 잡힙니다.',
+    title: '기업을 누르면 주변이 살아난다',
+    body: '선택한 기업과 그 이웃만 밝게 남아 맥락이 또렷해집니다. 나머지는 흐려지며 한 회사의 관계가 또렷이 드러납니다.',
   },
   {
     mode: 'node',
-    focusId: 'c0',
+    focusId: 'hub:1',
     kicker: '숨은 연결',
     title: '기업 간 지분·계열 관계까지',
     body: '기업과 기업을 잇는 지분·계열 관계를 따라가며, 표면에 드러나지 않던 지배구조의 흐름을 추적합니다.',
@@ -353,9 +353,29 @@ export default function Landing() {
                   transform: activeStep === i ? 'translateY(0)' : 'translateY(16px)',
                 }}
               >
-                <p className="mb-3 text-xs tracking-[0.35em] text-sky-300/80">{s.kicker}</p>
-                <h2 className="mb-4 text-3xl font-bold text-white sm:text-4xl">{s.title}</h2>
-                <p className="text-sm leading-relaxed text-white/70 sm:text-base">{s.body}</p>
+                {/* 자유 단계(맨 아래)는 비네팅이 꺼져 배경이 페이지색이 된다.
+                    라이트 모드에선 흰 배경 위 흰 글씨가 안 보이므로 그 단계만 어두운 글씨로. */}
+                <p
+                  className={`mb-3 text-xs tracking-[0.35em] ${
+                    s.free ? 'text-sky-600 dark:text-sky-300/80' : 'text-sky-300/80'
+                  }`}
+                >
+                  {s.kicker}
+                </p>
+                <h2
+                  className={`mb-4 text-3xl font-bold sm:text-4xl ${
+                    s.free ? 'text-slate-900 dark:text-white' : 'text-white'
+                  }`}
+                >
+                  {s.title}
+                </h2>
+                <p
+                  className={`text-sm leading-relaxed sm:text-base ${
+                    s.free ? 'text-slate-600 dark:text-white/70' : 'text-white/70'
+                  }`}
+                >
+                  {s.body}
+                </p>
                 {s.free && (
                   <button
                     onClick={() => setShowLogin(true)}

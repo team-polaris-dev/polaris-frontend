@@ -1,16 +1,18 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import ForceGraph3D from 'react-force-graph-3d'
+import { API_BASE } from '../lib/auth'
 
 /* ──────────────────────────────────────────────────────────────
-   GraphExplorer — 3D 그래프 "창" (데모/목업). vasturiano/3d-force-graph 기반.
+   GraphExplorer — 3D 그래프 "창". vasturiano/3d-force-graph 기반.
+   데이터: 마운트 시 GET /api/graph/landing (Neo4j 실데이터)을 불러와 그린다.
+   응답이 비었거나 실패하면 buildMockUniverse() 목업으로 폴백한다(랜딩 빈 화면 방지).
    외부에서 카메라/하이라이트를 제어할 수 있다(스크롤 카메라 투어용):
      - mode 'overview' : 전체가 화면에 들어오게 줌
      - mode 'node'     : focusId 노드로 카메라 비행 + 그 노드/이웃만 강조
      - mode 'free'     : 사용자가 직접 드래그/줌/클릭 (interactive=true)
-   추후 백엔드(Neo4j) 응답을 graphData 로 갈아끼우면 된다.
    ────────────────────────────────────────────────────────────── */
 
-export type Category = 'company' | 'person' | 'product' | 'technology'
+export type Category = 'company' | 'person' | 'product' | 'technology' | 'finance'
 export type Mode = 'overview' | 'node' | 'free'
 
 interface UNode {
@@ -25,17 +27,20 @@ interface ULink {
   kind: string
 }
 
+// Muted(Nord 톤) 팔레트 — 채도를 낮춘 차분·고급 색.
 const PALETTE: Record<Category, string> = {
-  company: '#5b8cff',
-  person: '#ff6fae',
-  product: '#34d399',
-  technology: '#fbbf24',
+  company: '#81a1c1',
+  person: '#b48ead',
+  product: '#a3be8c',
+  technology: '#d08770',
+  finance: '#ebcb8b',
 }
 const CATEGORY_LABEL: Record<Category, string> = {
   company: '기업',
   person: '인물',
   product: '제품',
   technology: '기술',
+  finance: '재무',
 }
 const DIM = '#2b2b3d'
 
@@ -120,8 +125,9 @@ function linkEnd(v: any) {
   return typeof v === 'object' ? v.id : v
 }
 
-function flyTo(fg: any, node: any) {
-  const dist = 80
+// dist = 노드와 카메라 사이 거리(작을수록 바짝 확대). 투어 자동 포커스는 80,
+// 사용자가 직접 노드를 클릭할 땐 너무 가깝지 않게 더 큰 값을 넘긴다.
+function flyTo(fg: any, node: any, dist = 80) {
   const hyp = Math.hypot(node.x, node.y, node.z || 0.0001) || 1
   const r = 1 + dist / hyp
   fg.cameraPosition({ x: node.x * r, y: node.y * r, z: (node.z || 0) * r }, node, 1400)
@@ -148,7 +154,34 @@ export default function GraphExplorer({
   const [selected, setSelected] = useState<string | null>(null)
   const [hover, setHover] = useState<string | null>(null)
 
-  const data = useMemo(buildMockUniverse, [])
+  // 초기엔 목업으로 즉시 그리고, 백엔드(Neo4j 실데이터)가 도착하면 갈아끼운다.
+  // 응답이 비었거나 실패하면 목업을 그대로 유지해 랜딩이 빈 화면이 되지 않게 한다.
+  // limit(노드 수)은 1000개로 고정 — 5개 카테고리가 가장 고르게 나오는 지점.
+  // (데이터상 인물·기술·재무 위성이 ~140개 한계라, 더 키우면 기업만 늘어 균형이 깨진다.)
+  const [data, setData] = useState<{ nodes: UNode[]; links: ULink[] }>(buildMockUniverse)
+  const limit = 1000
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    fetch(`${API_BASE}/api/graph/landing?limit=${limit}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        // 새 데이터가 올 때까지 이전 그래프를 유지(깜빡임 방지). 성공 시에만 교체.
+        if (alive && Array.isArray(d?.nodes) && d.nodes.length > 0) {
+          setData({ nodes: d.nodes as UNode[], links: (d.links ?? []) as ULink[] })
+        }
+      })
+      .catch(() => {
+        /* 목업/이전 데이터 유지 */
+      })
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [limit])
 
   const adjacency = useMemo(() => {
     const m = new Map<string, Set<string>>()
@@ -165,6 +198,19 @@ export default function GraphExplorer({
     data.nodes.forEach((n) => m.set(n.id, n))
     return m
   }, [data])
+
+  // 투어 단계는 'hub:0','hub:1' 처럼 "N번째로 큰 허브 기업"을 가리킨다(목업 ID 하드코딩 대신).
+  // 실데이터/목업 어느 쪽이든 현재 그래프에서 연결 많은 기업을 골라 실제 노드 id 로 해석한다.
+  // hub: 형식이 아니면 해당 id 가 데이터에 있을 때만 사용한다.
+  const resolvedFocusId = useMemo(() => {
+    if (!focusId) return null
+    const m = /^hub:(\d+)$/.exec(focusId)
+    if (!m) return nameById.has(focusId) ? focusId : null
+    const companies = data.nodes
+      .filter((n) => n.category === 'company')
+      .sort((a, b) => (adjacency.get(b.id)?.size ?? 0) - (adjacency.get(a.id)?.size ?? 0))
+    return companies[Number(m[1])]?.id ?? null
+  }, [focusId, data, nameById, adjacency])
 
   useEffect(() => {
     const el = wrapRef.current
@@ -237,8 +283,8 @@ export default function GraphExplorer({
         fg.zoomToFit(1000, 90)
         return
       }
-      if (mode === 'node' && focusId) {
-        const node = nodes.find((n) => n.id === focusId)
+      if (mode === 'node' && resolvedFocusId) {
+        const node = nodes.find((n) => n.id === resolvedFocusId)
         if (node) flyTo(fg, node)
       }
     }
@@ -246,10 +292,10 @@ export default function GraphExplorer({
     return () => {
       if (timer) clearTimeout(timer)
     }
-  }, [mode, focusId])
+  }, [mode, resolvedFocusId])
 
   // 강조 기준: 사용자가 찍은(또는 올린) 노드가 항상 우선, 없으면 투어 단계의 focusId.
-  const effFocus = selected ?? hover ?? (interactive ? null : focusId)
+  const effFocus = selected ?? hover ?? (interactive ? null : resolvedFocusId)
   const neighbors = effFocus ? adjacency.get(effFocus) : null
   const isActive = useCallback(
     (id: string) => !effFocus || id === effFocus || (neighbors?.has(id) ?? false),
@@ -259,7 +305,7 @@ export default function GraphExplorer({
   const handleNodeClick = useCallback((node: any) => {
     const fg = fgRef.current
     setSelected((prev) => (prev === node.id ? null : node.id))
-    if (fg && Number.isFinite(node.x)) flyTo(fg, node)
+    if (fg && Number.isFinite(node.x)) flyTo(fg, node, 220) // 클릭은 더 멀리서(덜 확대)
   }, [])
 
   const handleBg = useCallback(() => {
@@ -323,10 +369,17 @@ export default function GraphExplorer({
           : '노드 클릭으로 집중 · 오른쪽 버튼으로 직접 조작'}
       </div>
 
+      {/* 데이터 로딩 표시 (하단 중앙) */}
+      {loading && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-sky-300/70 backdrop-blur">
+          불러오는 중…
+        </div>
+      )}
 
-      {/* 선택 노드 정보 카드 — 자유모드에서만 */}
+      {/* 선택 노드 정보 카드 — 우측 세로 중앙. 우상단 '그래프 직접 조작' 토글과
+          우하단 소년 일러스트 사이라 둘 다 가리지 않는다. */}
       {selectedNode && (
-        <div className="absolute right-4 top-4 w-64 rounded-xl border border-white/12 bg-[#0c0a1e]/90 p-4 text-white shadow-2xl backdrop-blur-md">
+        <div className="absolute right-4 top-1/2 w-64 -translate-y-1/2 rounded-xl border border-white/12 bg-[#0c0a1e]/90 p-4 text-white shadow-2xl backdrop-blur-md">
           <div className="mb-2 flex items-center gap-2">
             <span className="h-3 w-3 rounded-full" style={{ background: PALETTE[selectedNode.category] }} />
             <span className="text-xs text-white/55">{CATEGORY_LABEL[selectedNode.category]}</span>
