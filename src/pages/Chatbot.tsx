@@ -16,6 +16,7 @@ import {
   GripVertical,
   LogOut,
   Network,
+  BarChart2,
 } from 'lucide-react'
 import StarField from '../components/StarField'
 import ThemeToggle from '../components/ThemeToggle'
@@ -25,8 +26,9 @@ import Constellation from '../components/Constellation'
 import LoadingConstellation from '../components/LoadingConstellation'
 import Markdown from '../components/Markdown'
 import TypingMarkdown from '../components/TypingMarkdown'
-import FinancialChart, { type FinancialGroup, stripFinancialTable } from '../components/FinancialChart'
-import { SourceList } from '../components/DocDrawer'
+import FinancialChart, { type FinancialGroup, stripFinancialTable, parseFinancialTable } from '../components/FinancialChart'
+import { SourceList, dedupSources } from '../components/DocDrawer'
+import { printReport, splitDigestByReport } from '../lib/print'
 import { API_BASE, getUser, clearUser } from '../lib/auth'
 
 /* ──────────────────────────────────────────────────────────────
@@ -37,8 +39,8 @@ import { API_BASE, getUser, clearUser } from '../lib/auth'
    ────────────────────────────────────────────────────────────── */
 
 type Role = 'user' | 'assistant'
-// 우측 패널 탭: 별자리(관계도) + 원본 문서
-type PanelKey = 'constellation' | 'documents'
+// 우측 패널 탭: 별자리(관계도) + 원본 문서 + 재무지표 차트
+type PanelKey = 'constellation' | 'documents' | 'financials'
 
 interface GraphData {
   nodes: GNode[]
@@ -82,9 +84,12 @@ interface SessionItem {
 
 const hasGraph = (m?: { graph?: GraphData }) => !!m?.graph?.edges?.length
 const hasDocs = (m?: { documents?: DocItem[] }) => !!m?.documents?.length
-
-// DART 공식 공시 뷰어 URL — 14자리 접수번호(rcept_no)로 결정적으로 만들 수 있다.
-const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}`
+// 원본 문서 버튼에 표시할 건수 — 패널 '출처'(SourceList)와 동일하게 보고서 단위로
+// 중복 제거한 수. 두 곳이 같은 dedupSources 기준을 쓰므로 숫자가 항상 일치한다.
+const sourceCount = (m?: { documents?: DocItem[] }) => dedupSources(m?.documents ?? []).length
+// 재무지표 차트: 백엔드 구조화 데이터(financials)나 답변 본문의 다년도 표 중 하나라도 있으면
+const hasFinancials = (m?: { financials?: FinancialGroup[]; content?: string }) =>
+  !!m?.financials?.length || !!(m?.content && parseFinancialTable(m.content))
 
 // 새로고침해도 현재 대화를 유지하기 위해 활성 세션 ID 를 사용자별로 보관한다.
 const sessionStorageKey = (uid?: string) => `polaris_session:${uid || 'anon'}`
@@ -261,6 +266,7 @@ export default function ChatApp() {
   const availableTabs = useMemo<PanelKey[]>(() => {
     const tabs: PanelKey[] = []
     if (hasGraph(activeData ?? undefined)) tabs.push('constellation')
+    if (hasFinancials(activeData ?? undefined)) tabs.push('financials')
     if (hasDocs(activeData ?? undefined)) tabs.push('documents')
     return tabs
   }, [activeData])
@@ -301,6 +307,15 @@ export default function ChatApp() {
       setRightOpen(false)
     } else {
       openPanel(msgId, 'documents')
+    }
+  }
+
+  // 재무지표 차트 버튼: 같은 메시지의 차트 탭이 열려 있으면 닫고, 아니면 연다
+  const toggleFinancials = (msgId: number) => {
+    if (rightOpen && activeMsgId === msgId && activePanel === 'financials') {
+      setRightOpen(false)
+    } else {
+      openPanel(msgId, 'financials')
     }
   }
 
@@ -415,6 +430,7 @@ export default function ChatApp() {
 
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
     constellation: { label: '관계도', icon: Network },
+    financials: { label: '재무지표 차트', icon: BarChart2 },
     documents: { label: '원본 문서', icon: FileText },
   }
 
@@ -632,15 +648,23 @@ export default function ChatApp() {
                             ) : (
                               <Markdown text={displayText} />
                             )}
-                            {/* 재무지표 차트 — 표 대신 답변 안에 표시 (타이핑 끝난 뒤) */}
-                            {typingId !== m.id && (!!m.financials?.length || !!m.content) && (
-                              <FinancialChart financials={m.financials ?? []} sourceText={m.content} />
-                            )}
                           </div>
 
                           {/* 근거 버튼들 — 타이핑 끝난 뒤 노출. 우측 패널 탭을 연다 */}
-                          {typingId !== m.id && (hasDocs(m) || hasGraph(m)) && (
+                          {typingId !== m.id && (hasDocs(m) || hasGraph(m) || hasFinancials(m)) && (
                             <div className="flex w-full flex-wrap justify-end gap-1.5">
+                              {hasFinancials(m) && (
+                                <button
+                                  onClick={() => toggleFinancials(m.id)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'financials'
+                                      ? 'border-blue-400 bg-blue-100 text-blue-700 dark:border-blue-400/40 dark:bg-blue-400/20 dark:text-blue-200'
+                                      : 'border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:border-blue-300/20 dark:bg-blue-300/10 dark:text-blue-300 dark:hover:bg-blue-300/20'
+                                  }`}
+                                >
+                                  <BarChart2 size={12} /> 재무지표 차트
+                                </button>
+                              )}
                               {hasDocs(m) && (
                                 <button
                                   onClick={() => toggleDocuments(m.id)}
@@ -650,7 +674,7 @@ export default function ChatApp() {
                                       : 'border-sky-200 bg-sky-50 text-sky-600 hover:bg-sky-100 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-300 dark:hover:bg-sky-300/20'
                                   }`}
                                 >
-                                  <FileText size={11} /> 원본 문서 {m.documents!.length}건
+                                  <FileText size={11} /> 원본 문서 {sourceCount(m)}건
                                 </button>
                               )}
                               {hasGraph(m) && (
@@ -795,27 +819,84 @@ export default function ChatApp() {
                 )
               )}
 
+              {/* ───── 재무지표 차트 (차트마다 PNG 저장 버튼은 컴포넌트 내부) ───── */}
+              {activePanel === 'financials' && (
+                hasFinancials(activeData ?? undefined) ? (
+                  <FinancialChart
+                    financials={activeData?.financials ?? []}
+                    sourceText={activeData?.content}
+                    panelMode
+                  />
+                ) : (
+                  <p className="text-xs text-slate-400">표시할 재무지표가 없습니다.</p>
+                )
+              )}
+
               {/* ───── 원본 문서 ───── */}
               {activePanel === 'documents' && (
                 hasDocs(activeData ?? undefined) ? (
                   <>
-                    {/* AI 사실 정리 — 근거에서 확인되는 사실만 나열 */}
+                    {/* AI가 정리한 원문 — 보고서별 카드, 각 보고서를 개별 PDF로 추출 */}
                     {(!!activeData?.digest || activeData?.digestLoading) && (
                       <div className="mb-4">
                         <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
                           <Sparkles size={13} className="text-indigo-500" />
-                          핵심 사실 정리
+                          AI가 정리한 원문
                         </div>
-                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-700 shadow-sm dark:border-slate-300/30 dark:bg-slate-100 dark:text-slate-800">
-                          {activeData?.digest ? (
-                            <Markdown text={activeData.digest} />
-                          ) : (
+                        {activeData?.digest ? (
+                          <div className="space-y-2.5">
+                            {splitDigestByReport(activeData.digest).map((sec, i) => (
+                              <div
+                                key={i}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-700 shadow-sm dark:border-slate-300/30 dark:bg-slate-100 dark:text-slate-800"
+                              >
+                                <div className="mb-1.5 flex items-start justify-between gap-2">
+                                  <span className="min-w-0 flex-1 text-[12.5px] font-semibold">
+                                    {sec.title ? (
+                                      sec.url ? (
+                                        <a
+                                          href={sec.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-sky-600 underline decoration-sky-300 underline-offset-2 hover:text-sky-700 dark:text-sky-700"
+                                        >
+                                          {sec.title}
+                                        </a>
+                                      ) : (
+                                        sec.title
+                                      )
+                                    ) : (
+                                      '정리된 원문'
+                                    )}
+                                  </span>
+                                  <button
+                                    onClick={() =>
+                                      printReport({
+                                        title:
+                                          sec.title ||
+                                          `${activeData?.documents?.[0]?.corp_name || 'POLARIS'} 보고서`,
+                                        digest: sec.body,
+                                        sources: sec.url ? [{ name: sec.title, url: sec.url }] : [],
+                                      })
+                                    }
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-600 transition hover:bg-rose-100 dark:border-rose-400/30 dark:bg-rose-400/20 dark:text-rose-700"
+                                    title="이 보고서의 정리 원문을 PDF로 저장 (인쇄 → PDF)"
+                                  >
+                                    <FileText size={10} /> PDF
+                                  </button>
+                                </div>
+                                <Markdown text={sec.body} gridTable />
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 shadow-sm dark:border-slate-300/30 dark:bg-slate-100">
                             <span className="flex items-center gap-1.5 text-[12px] text-slate-400">
                               <Sparkles size={12} className="animate-pulse text-indigo-400" />
-                              핵심 사실을 정리하는 중…
+                              원문을 정리하는 중…
                             </span>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     {/* 출처 — 보고서명 + DART 링크 버튼만 간단히 */}

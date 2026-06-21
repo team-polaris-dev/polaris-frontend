@@ -313,9 +313,10 @@ export function GroupedDocList({ docs, full = false }: { docs: DocItem[]; full?:
   )
 }
 
-// 간단한 출처 목록 — 보고서명 + DART 링크 버튼만. (사실 나열본 아래에 붙는다)
-export function SourceList({ docs }: { docs: DocItem[] }) {
-  // 보고서 단위 dedup(rcept_no→보고서명). 재무 요약(rdb)은 단일 보고서 출처가 아니라 제외.
+// 보고서 단위 출처 목록 — rcept_no(없으면 보고서명/chunk_id)로 중복 제거,
+// 재무 요약(rdb)은 단일 보고서 출처가 아니라 제외. SourceList 와 채팅 버튼 건수가
+// 같은 기준을 쓰도록 공용으로 둔다.
+export function dedupSources(docs: DocItem[]): DocItem[] {
   const seen = new Map<string, DocItem>()
   for (const d of docs) {
     if (d.source_kind === 'rdb') continue
@@ -323,7 +324,12 @@ export function SourceList({ docs }: { docs: DocItem[] }) {
     if (!key || seen.has(key)) continue
     seen.set(key, d)
   }
-  const sources = Array.from(seen.values())
+  return Array.from(seen.values())
+}
+
+// 간단한 출처 목록 — 보고서명 + DART 링크 버튼만. (사실 나열본 아래에 붙는다)
+export function SourceList({ docs }: { docs: DocItem[] }) {
+  const sources = dedupSources(docs)
   if (!sources.length) return null
 
   return (

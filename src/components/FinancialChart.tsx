@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   BarChart,
   Bar,
@@ -10,7 +10,34 @@ import {
   Cell,
   Legend,
 } from 'recharts'
-import { ChevronDown, BarChart2 } from 'lucide-react'
+import { ChevronDown, BarChart2, Download } from 'lucide-react'
+import { exportNodeToPng } from '../lib/export'
+
+/* 차트 하나를 감싸 우상단에 PNG 저장 버튼을 붙인다. 버튼은 캡처 영역(ref) 밖이라
+   이미지에 찍히지 않는다. 차트별로 따로 내려받을 수 있게 각 차트를 이걸로 감싼다. */
+function ChartCapture({ fileName, children }: { fileName: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  return (
+    <div className="relative">
+      <button
+        onClick={() =>
+          exportNodeToPng(ref.current, fileName).catch((e) =>
+            console.error('차트 이미지 저장 실패:', e),
+          )
+        }
+        className="absolute right-1 top-1 z-10 inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600 shadow-sm transition hover:bg-blue-100"
+        title="이 차트를 PNG 이미지로 저장"
+      >
+        <Download size={10} /> 이미지
+      </button>
+      {/* 흰 카드 위에 진한 글자 — 화면·내보낸 PNG 모두 또렷하게 (다크 패널에선
+          정리 원문 카드와 같은 밝은 카드 패턴) */}
+      <div ref={ref} className="rounded-lg border border-slate-200 bg-white p-3">
+        {children}
+      </div>
+    </div>
+  )
+}
 
 export interface FinancialMetric {
   label: string
@@ -153,7 +180,7 @@ function SectionBarChart({
 
   return (
     <div>
-      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-slate-600">
         {title}
       </p>
       <ResponsiveContainer width="100%" height={190}>
@@ -164,12 +191,12 @@ function SectionBarChart({
         >
           <XAxis
             dataKey="name"
-            tick={{ fontSize: 10, fill: '#94a3b8' }}
+            tick={{ fontSize: 10, fill: '#475569' }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fontSize: 10, fill: '#94a3b8' }}
+            tick={{ fontSize: 10, fill: '#475569' }}
             axisLine={false}
             tickLine={false}
             tickFormatter={(v: number) => `${v}`}
@@ -186,7 +213,7 @@ function SectionBarChart({
             <LabelList
               dataKey="value"
               position="top"
-              style={{ fontSize: 10, fill: '#94a3b8' }}
+              style={{ fontSize: 10, fill: '#475569' }}
               formatter={(v: unknown) => {
                 const n = typeof v === 'number' ? v : parseFloat(String(v))
                 return `${n.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}${unit}`
@@ -237,8 +264,8 @@ function ComparisonChart({ groups }: { groups: FinancialGroup[] }) {
   return (
     <ResponsiveContainer width="100%" height={230}>
       <BarChart data={data} margin={{ top: 28, right: 6, bottom: 0, left: -8 }} barCategoryGap="22%">
-        <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={42} />
+        <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#475569' }} axisLine={false} tickLine={false} />
+        <YAxis tick={{ fontSize: 10, fill: '#475569' }} axisLine={false} tickLine={false} width={42} />
         <Tooltip content={<CmpTooltip unit={unit} />} cursor={{ fill: 'rgba(148,163,184,0.06)' }} />
         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} iconType="circle" iconSize={8} />
         {years.map((y, yi) => (
@@ -247,7 +274,7 @@ function ComparisonChart({ groups }: { groups: FinancialGroup[] }) {
             <LabelList
               dataKey={`y${y}`}
               position="top"
-              style={{ fontSize: 9, fill: '#94a3b8' }}
+              style={{ fontSize: 9, fill: '#475569' }}
               formatter={(v: unknown) => {
                 const n = typeof v === 'number' ? v : parseFloat(String(v))
                 return Number.isFinite(n) ? `${n.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}` : ''
@@ -265,9 +292,11 @@ interface Props {
   financials: FinancialGroup[]
   // 답변 본문 — 안에 다년도 표가 있으면 그걸 우선해 비교 차트로 그린다
   sourceText?: string
+  // 우측 패널 모드 — 자체 카드 테두리·접기 헤더 없이 차트만 그린다(탭이 제목 역할).
+  panelMode?: boolean
 }
 
-export default function FinancialChart({ financials, sourceText }: Props) {
+export default function FinancialChart({ financials, sourceText, panelMode = false }: Props) {
   const [collapsed, setCollapsed] = useState(false)
 
   // 본문 표에서 다년도 데이터를 파싱 (있으면 비교 차트 우선)
@@ -277,6 +306,79 @@ export default function FinancialChart({ financials, sourceText }: Props) {
   }, [sourceText, financials])
 
   if (!financials?.length && !comparison) return null
+
+  // 헤더/탭에 붙는 부제(회사·연도·단위)
+  const subtitle = comparison ? (
+    <>
+      {comparison[0].corp_name || financials?.[0]?.corp_name || ''}{' '}
+      {comparison.map((g) => g.year).sort((a, b) => (b as number) - (a as number)).join('·')}년 비교
+      &nbsp;(단위:&nbsp;{comparison.find((g) => g.unit)?.unit || '조원'})
+    </>
+  ) : financials.length === 1 ? (
+    <>
+      {financials[0].corp_name} {financials[0].year}년&nbsp;(단위:&nbsp;{financials[0].unit})
+    </>
+  ) : null
+
+  // 차트 본문 — 비교(다년도) 우선, 없으면 단년도(백엔드 구조화 데이터)
+  const bodyClass = panelMode
+    ? 'pt-1'
+    : 'border-t border-slate-200 px-4 pb-5 pt-3 dark:border-white/10'
+  const cmpCorp = comparison?.[0]?.corp_name || financials?.[0]?.corp_name || '재무'
+  const body = comparison ? (
+    <div className={bodyClass}>
+      <ChartCapture fileName={`POLARIS_${cmpCorp}_연도비교`}>
+        <p className="text-[12px] font-semibold text-slate-700">{subtitle}</p>
+        <p className="mb-2 mt-0.5 text-[10px] font-semibold uppercase tracking-widest text-slate-600">
+          연도별 비교
+        </p>
+        <ComparisonChart groups={comparison} />
+      </ChartCapture>
+    </div>
+  ) : (
+    <div className={bodyClass}>
+      {financials.map((group, gi) => {
+        const map = Object.fromEntries(group.metrics.map((m) => [m.label, m.value]))
+        const unit = group.unit
+        const tag = `${group.corp_name || '재무'}_${group.year ?? ''}`
+
+        const incomeData = INCOME_KEYS
+          .filter((k) => map[k] !== undefined)
+          .map((k) => ({ name: k, value: map[k] }))
+
+        const balanceData = BALANCE_KEYS
+          .filter((k) => map[k] !== undefined)
+          .map((k) => ({ name: k, value: map[k] }))
+
+        return (
+          <div
+            key={gi}
+            className={
+              gi > 0 ? 'mt-5 border-t border-slate-200 pt-4 dark:border-white/10' : ''
+            }
+          >
+            {/* 기업 단위로 한 번에 캡처 — 손익·재무상태 두 차트를 한 이미지로.
+                흰 카드 위라 글자는 항상 진하게(dark: 라이트 변형 없음) */}
+            <ChartCapture fileName={`POLARIS_${tag}`}>
+              <p className="mb-3 text-[12px] font-semibold text-slate-700">
+                {group.corp_name} · {group.year}년
+                <span className="ml-1.5 font-normal text-slate-500">(단위: {unit})</span>
+              </p>
+              <div className="grid gap-6 sm:grid-cols-2">
+                <SectionBarChart title="손익 현황" data={incomeData} colors={INCOME_COLORS} unit={unit} />
+                <SectionBarChart title="재무 상태" data={balanceData} colors={BALANCE_COLORS} unit={unit} />
+              </div>
+            </ChartCapture>
+          </div>
+        )
+      })}
+    </div>
+  )
+
+  // 패널 모드 — 테두리·접기 없이 차트 카드만 (제목/부제는 캡처 카드 안에 포함).
+  if (panelMode) {
+    return <div className="w-full">{body}</div>
+  }
 
   return (
     <div
@@ -297,17 +399,7 @@ export default function FinancialChart({ financials, sourceText }: Props) {
           <BarChart2 size={14} className="shrink-0 text-blue-500 dark:text-sky-400" />
           <span className="flex-1 text-[12px] font-semibold text-slate-600 dark:text-slate-200">
             재무지표 차트
-            {comparison ? (
-              <span className="ml-1.5 font-normal text-slate-400">
-                — {comparison[0].corp_name || financials?.[0]?.corp_name || ''}{' '}
-                {comparison.map((g) => g.year).sort((a, b) => (b as number) - (a as number)).join('·')}년 비교
-                &nbsp;(단위:&nbsp;{comparison.find((g) => g.unit)?.unit || '조원'})
-              </span>
-            ) : financials.length === 1 ? (
-              <span className="ml-1.5 font-normal text-slate-400">
-                — {financials[0].corp_name} {financials[0].year}년&nbsp;(단위:&nbsp;{financials[0].unit})
-              </span>
-            ) : null}
+            {subtitle && <span className="ml-1.5 font-normal text-slate-400">— {subtitle}</span>}
           </span>
           <ChevronDown
             size={14}
@@ -318,67 +410,7 @@ export default function FinancialChart({ financials, sourceText }: Props) {
         </button>
 
         {/* 차트 본문 */}
-        {!collapsed && comparison && (
-          <div className="border-t border-slate-200 px-4 pb-5 pt-3 dark:border-white/10">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
-              연도별 비교
-            </p>
-            <ComparisonChart groups={comparison} />
-          </div>
-        )}
-
-        {/* 차트 본문 — 단년도(백엔드 구조화 데이터) */}
-        {!collapsed && !comparison && (
-          <div className="border-t border-slate-200 px-4 pb-5 pt-3 dark:border-white/10">
-            {financials.map((group, gi) => {
-              const map = Object.fromEntries(group.metrics.map((m) => [m.label, m.value]))
-              const unit = group.unit
-
-              const incomeData = INCOME_KEYS
-                .filter((k) => map[k] !== undefined)
-                .map((k) => ({ name: k, value: map[k] }))
-
-              const balanceData = BALANCE_KEYS
-                .filter((k) => map[k] !== undefined)
-                .map((k) => ({ name: k, value: map[k] }))
-
-              return (
-                <div
-                  key={gi}
-                  className={
-                    gi > 0
-                      ? 'mt-5 border-t border-slate-200 pt-4 dark:border-white/10'
-                      : ''
-                  }
-                >
-                  {financials.length > 1 && (
-                    <p className="mb-3 text-[12px] font-semibold text-slate-600 dark:text-slate-200">
-                      {group.corp_name} · {group.year}년
-                      <span className="ml-1.5 font-normal text-slate-400">
-                        (단위: {unit})
-                      </span>
-                    </p>
-                  )}
-
-                  <div className="grid gap-6 sm:grid-cols-2">
-                    <SectionBarChart
-                      title="손익 현황"
-                      data={incomeData}
-                      colors={INCOME_COLORS}
-                      unit={unit}
-                    />
-                    <SectionBarChart
-                      title="재무 상태"
-                      data={balanceData}
-                      colors={BALANCE_COLORS}
-                      unit={unit}
-                    />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
+        {!collapsed && body}
       </div>
     </div>
   )

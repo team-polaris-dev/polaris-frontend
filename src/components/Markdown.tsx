@@ -7,11 +7,26 @@ import React from 'react'
    ────────────────────────────────────────────────────────────── */
 
 function inline(text: string, keyBase: string): React.ReactNode[] {
-  // **굵게** 와 일반 텍스트 분리
-  return text.split(/(\*\*[^*]+\*\*)/g).map((p, i) => {
+  // [텍스트](링크) 와 **굵게** 를 분리해 렌더 (나머지는 일반 텍스트)
+  return text.split(/(\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g).map((p, i) => {
+    const key = `${keyBase}-${i}`
     if (p.startsWith('**') && p.endsWith('**'))
-      return <strong key={`${keyBase}-${i}`}>{p.slice(2, -2)}</strong>
-    return <React.Fragment key={`${keyBase}-${i}`}>{p}</React.Fragment>
+      return <strong key={key}>{p.slice(2, -2)}</strong>
+    const link = p.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+    if (link && /^https?:\/\//.test(link[2])) {
+      return (
+        <a
+          key={key}
+          href={link[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-sky-600 underline decoration-sky-300 underline-offset-2 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300"
+        >
+          {link[1]}
+        </a>
+      )
+    }
+    return <React.Fragment key={key}>{p}</React.Fragment>
   })
 }
 
@@ -42,7 +57,9 @@ function tryParseTable(lines: string[], start: number): ParsedTable | null {
   return { headerCells, rows, end: i }
 }
 
-export default function Markdown({ text }: { text: string }) {
+// gridTable: 표에 실선 그리드를 그린다(밝은 배경 카드용 — 예: 정리 원문).
+// 기본(false)은 채팅 답변용 — 옅은 줄무늬만, 테마에 녹아드는 스타일.
+export default function Markdown({ text, gridTable = false }: { text: string; gridTable?: boolean }) {
   const lines = (text || '').replace(/\r\n/g, '\n').split('\n')
   const blocks: React.ReactNode[] = []
   let para: string[] = []
@@ -83,13 +100,28 @@ export default function Markdown({ text }: { text: string }) {
       blocks.push(
         <div
           key={key}
-          className="my-1 overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10"
+          className={
+            gridTable
+              ? 'my-1 overflow-x-auto rounded-xl border border-slate-300'
+              : 'my-1 overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10'
+          }
         >
-          <table className="w-full text-xs">
+          <table className={`w-full text-xs ${gridTable ? 'border-collapse' : ''}`}>
             <thead>
-              <tr className="bg-slate-100/70 text-slate-500 dark:bg-white/[0.04] dark:text-slate-400">
+              <tr
+                className={
+                  gridTable
+                    ? 'bg-slate-100 text-slate-500'
+                    : 'bg-slate-100/70 text-slate-500 dark:bg-white/[0.04] dark:text-slate-400'
+                }
+              >
                 {table.headerCells.map((c, ci) => (
-                  <th key={ci} className="px-3 py-2 text-left font-medium">
+                  <th
+                    key={ci}
+                    className={`px-3 py-2 text-left font-medium ${
+                      gridTable ? 'border border-slate-300' : ''
+                    }`}
+                  >
                     {inline(c, `${key}-h-${ci}`)}
                   </th>
                 ))}
@@ -99,10 +131,23 @@ export default function Markdown({ text }: { text: string }) {
               {table.rows.map((row, ri) => (
                 <tr
                   key={ri}
-                  className={ri % 2 ? 'bg-white/40 dark:bg-transparent' : 'bg-white/70 dark:bg-white/[0.02]'}
+                  className={
+                    gridTable
+                      ? ri % 2
+                        ? 'bg-white'
+                        : 'bg-slate-50'
+                      : ri % 2
+                        ? 'bg-white/40 dark:bg-transparent'
+                        : 'bg-white/70 dark:bg-white/[0.02]'
+                  }
                 >
                   {row.map((c, ci) => (
-                    <td key={ci} className="px-3 py-2 align-top tabular-nums">
+                    <td
+                      key={ci}
+                      className={`px-3 py-2 align-top tabular-nums ${
+                        gridTable ? 'border border-slate-300' : ''
+                      }`}
+                    >
                       {inline(c, `${key}-${ri}-${ci}`)}
                     </td>
                   ))}
