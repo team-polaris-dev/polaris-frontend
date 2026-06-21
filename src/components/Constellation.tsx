@@ -17,18 +17,26 @@ const REL_COLOR: Record<string, string> = {
   EXECUTIVE_OF: '#f0a8d0',
   IS_MAJOR_SHAREHOLDER_OF: '#6ee7b7',
   SUPPLIES_TO: '#7dd3fc',
+  INVESTS_IN: '#6ee7b7',
+  PRODUCES: '#fbbf72',
+  USES_TECH: '#c4b5fd',
+  RELATED_PARTY: '#f9a8a8',
+  INTERLOCKING_DIRECTORATE: '#94a3b8',
   ACQUIRES: '#f0a8d0',
   INVESTS: '#6ee7b7',
-  INVESTS_IN: '#6ee7b7',
 }
 const REL_LABEL: Record<string, string> = {
   IS_SUBSIDIARY_OF: '자회사',
   EXECUTIVE_OF: '임원',
   IS_MAJOR_SHAREHOLDER_OF: '대주주',
   SUPPLIES_TO: '공급',
+  INVESTS_IN: '투자',
+  PRODUCES: '생산',
+  USES_TECH: '기술',
+  RELATED_PARTY: '특수관계',
+  INTERLOCKING_DIRECTORATE: '겸직',
   ACQUIRES: '인수',
   INVESTS: '투자',
-  INVESTS_IN: '투자',
 }
 const relColor = (t: string) => REL_COLOR[t] || '#9ec3ff'
 const relLabel = (t: string) => REL_LABEL[t] || t
