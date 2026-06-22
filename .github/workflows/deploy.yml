@@ -1,0 +1,30 @@
+name: Deploy frontend
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+
+  deploy:
+    needs: build-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd ~/polaris-frontend && git pull --ff-only
+            cd ~/polaris-backend && docker compose --profile full up -d --build --no-deps frontend
