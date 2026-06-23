@@ -23,7 +23,6 @@ import {
   Cpu,
   Users,
   AlertTriangle,
-  Layers,
 } from 'lucide-react'
 import StarField from '../components/StarField'
 import PolarisStar from '../components/PolarisStar'
@@ -34,8 +33,7 @@ import Constellation from '../components/Constellation'
 import LoadingConstellation from '../components/LoadingConstellation'
 import Markdown from '../components/Markdown'
 import TypingMarkdown from '../components/TypingMarkdown'
-import FinancialChart, { type FinancialGroup, type RatioGroup, stripFinancialTable, parseFinancialTable } from '../components/FinancialChart'
-import OwnershipPanel, { type OwnershipData } from '../components/OwnershipPanel'
+import FinancialChart, { type FinancialGroup, stripFinancialTable, parseFinancialTable } from '../components/FinancialChart'
 import { SourceList, dedupSources } from '../components/DocDrawer'
 import { printReport, splitDigestByReport } from '../lib/print'
 import { API_BASE, getUser, clearUser } from '../lib/auth'
@@ -48,8 +46,8 @@ import { API_BASE, getUser, clearUser } from '../lib/auth'
    ────────────────────────────────────────────────────────────── */
 
 type Role = 'user' | 'assistant'
-// 우측 패널 탭: 별자리(관계도) + 재무지표 차트 + 지분·관계 + 원본 문서 + 뉴스 분석
-type PanelKey = 'constellation' | 'documents' | 'financials' | 'ownership' | 'news'
+// 우측 패널 탭: 별자리(관계도) + 재무지표 차트 + 원본 문서 + 뉴스 분석
+type PanelKey = 'constellation' | 'documents' | 'financials' | 'news'
 
 interface GraphData {
   nodes: GNode[]
@@ -105,8 +103,6 @@ interface Message {
   graph?: GraphData
   documents?: DocItem[]
   financials?: FinancialGroup[]
-  ratios?: RatioGroup[]
-  ownership?: OwnershipData
   digest?: string
   // 답변 표시 후 별도 호출로 채우는 '핵심 사실 정리' — 받아오는 동안 true
   digestLoading?: boolean
@@ -131,13 +127,10 @@ const hasDocs = (m?: { documents?: DocItem[] }) => !!m?.documents?.length
 // 원본 문서 버튼에 표시할 건수 — 패널 '출처'(SourceList)와 동일하게 보고서 단위로
 // 중복 제거한 수. 두 곳이 같은 dedupSources 기준을 쓰므로 숫자가 항상 일치한다.
 const sourceCount = (m?: { documents?: DocItem[] }) => dedupSources(m?.documents ?? []).length
-// 재무지표 차트: 백엔드 구조화 데이터(financials)·재무비율(ratios)·답변 본문 다년도 표 중 하나라도
-const hasFinancials = (m?: { financials?: FinancialGroup[]; ratios?: RatioGroup[]; content?: string }) =>
-  !!m?.financials?.length || !!m?.ratios?.length || !!(m?.content && parseFinancialTable(m.content))
+// 재무지표 차트: 백엔드 구조화 데이터(financials)·답변 본문 다년도 표 중 하나라도
+const hasFinancials = (m?: { financials?: FinancialGroup[]; content?: string }) =>
+  !!m?.financials?.length || !!(m?.content && parseFinancialTable(m.content))
 const hasNews = (m?: { news?: NewsData }) => !!m?.news?.companies?.length
-// 지분·관계: 최대주주 또는 타법인출자 데이터가 있으면
-const hasOwnership = (m?: { ownership?: OwnershipData }) =>
-  !!(m?.ownership && ((m.ownership.shareholders?.length ?? 0) || (m.ownership.investments?.length ?? 0)))
 
 // DART 공식 공시 뷰어 URL — 14자리 접수번호(rcept_no)로 결정적으로 만들 수 있다.
 const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}`
@@ -412,8 +405,6 @@ export default function ChatApp() {
         graph?: GraphData
         documents?: DocItem[]
         financials?: FinancialGroup[]
-        ratios?: RatioGroup[]
-        ownership?: OwnershipData
         digest?: string
         news?: NewsData
       }[]
@@ -425,8 +416,6 @@ export default function ChatApp() {
         graph: r.graph || { nodes: [], edges: [] },
         documents: r.documents || [],
         financials: r.financials || [],
-        ratios: r.ratios || [],
-        ownership: r.ownership || { shareholders: [], investments: [] },
         digest: r.digest || '',
         // 저장된 뉴스 분석을 그대로 복원(추가 fetch 없음, 설계 §8)
         news: r.news || { companies: [] },
@@ -550,7 +539,6 @@ export default function ChatApp() {
     const tabs: PanelKey[] = []
     if (hasGraph(activeData ?? undefined)) tabs.push('constellation')
     if (hasFinancials(activeData ?? undefined)) tabs.push('financials')
-    if (hasOwnership(activeData ?? undefined)) tabs.push('ownership')
     if (hasDocs(activeData ?? undefined)) tabs.push('documents')
     // 뉴스 분석 — 데이터가 있거나 로딩 중이면 탭 노출(기존 탭 로직은 그대로, 한 줄 추가)
     if (hasNews(activeData ?? undefined) || activeData?.newsLoading) tabs.push('news')
@@ -614,15 +602,6 @@ export default function ChatApp() {
     }
   }
 
-  // 지분·관계 버튼: 같은 메시지의 지분 탭이 열려 있으면 닫고, 아니면 연다
-  const toggleOwnership = (msgId: number) => {
-    if (rightOpen && activeMsgId === msgId && activePanel === 'ownership') {
-      setRightOpen(false)
-    } else {
-      openPanel(msgId, 'ownership')
-    }
-  }
-
   const handleSend = async () => {
     const text = input.trim()
     if (!text || loading || !user) return
@@ -670,8 +649,6 @@ export default function ChatApp() {
       const graph: GraphData = data.graph || { nodes: [], edges: [] }
       const documents: DocItem[] = data.documents || []
       const financials: FinancialGroup[] = data.financials || []
-      const ratios: RatioGroup[] = data.ratios || []
-      const ownership: OwnershipData = data.ownership || { shareholders: [], investments: [] }
 
       // digest(핵심 사실 정리)는 답변 표시 후 별도로 받아온다. 문서가 있으면 로딩 표시.
       const serverId: number = data.message_id || 0
@@ -689,8 +666,6 @@ export default function ChatApp() {
           graph,
           documents,
           financials,
-          ratios,
-          ownership,
           digest: data.digest || '',
           news: { companies: [] },
           serverId,
@@ -813,7 +788,6 @@ export default function ChatApp() {
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
     constellation: { label: '관계도', icon: Network },
     financials: { label: '재무지표 차트', icon: BarChart2 },
-    ownership: { label: '지분·관계', icon: Layers },
     documents: { label: '원본 문서', icon: FileText },
     news: { label: '뉴스 분석', icon: Newspaper },
   }
@@ -1091,18 +1065,6 @@ export default function ChatApp() {
                                   <BarChart2 size={12} /> 재무지표 차트
                                 </button>
                               )}
-                              {hasOwnership(m) && (
-                                <button
-                                  onClick={() => toggleOwnership(m.id)}
-                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
-                                    rightOpen && activeMsgId === m.id && activePanel === 'ownership'
-                                      ? 'border-teal-400 bg-teal-100 text-teal-700 dark:border-teal-400/40 dark:bg-teal-400/20 dark:text-teal-200'
-                                      : 'border-teal-200 bg-teal-50 text-teal-600 hover:bg-teal-100 dark:border-teal-300/20 dark:bg-teal-300/10 dark:text-teal-300 dark:hover:bg-teal-300/20'
-                                  }`}
-                                >
-                                  <Layers size={12} /> 지분·관계
-                                </button>
-                              )}
                               {hasDocs(m) && (
                                 <button
                                   onClick={() => toggleDocuments(m.id)}
@@ -1268,23 +1230,11 @@ export default function ChatApp() {
                 hasFinancials(activeData ?? undefined) ? (
                   <FinancialChart
                     financials={activeData?.financials ?? []}
-                    ratios={activeData?.ratios ?? []}
                     sourceText={activeData?.content}
                     panelMode
                   />
                 ) : (
                   <p className="text-xs text-slate-400">표시할 재무지표가 없습니다.</p>
-                )
-              )}
-
-              {/* ───── 지분·관계 (최대주주 · 타법인출자) ───── */}
-              {activePanel === 'ownership' && (
-                hasOwnership(activeData ?? undefined) ? (
-                  <OwnershipPanel
-                    data={activeData?.ownership ?? { shareholders: [], investments: [] }}
-                  />
-                ) : (
-                  <p className="text-xs text-slate-400">표시할 지분·관계 데이터가 없습니다.</p>
                 )
               )}
 
