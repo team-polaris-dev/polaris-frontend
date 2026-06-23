@@ -17,6 +17,12 @@ import {
   LogOut,
   Network,
   BarChart2,
+  Newspaper,
+  TrendingUp,
+  Factory,
+  Cpu,
+  Users,
+  AlertTriangle,
 } from 'lucide-react'
 import StarField from '../components/StarField'
 import ThemeToggle from '../components/ThemeToggle'
@@ -39,12 +45,40 @@ import { API_BASE, getUser, clearUser } from '../lib/auth'
    ────────────────────────────────────────────────────────────── */
 
 type Role = 'user' | 'assistant'
-// 우측 패널 탭: 별자리(관계도) + 원본 문서 + 재무지표 차트
-type PanelKey = 'constellation' | 'documents' | 'financials'
+// 우측 패널 탭: 별자리(관계도) + 원본 문서 + 재무지표 차트 + 뉴스 분석
+type PanelKey = 'constellation' | 'documents' | 'financials' | 'news'
 
 interface GraphData {
   nodes: GNode[]
   edges: GEdge[]
+}
+// 뉴스 분석 탭 — 답변 이후 /api/chat/news 로 지연 로딩되는 결과(설계 §4-2)
+interface NewsArticleCard {
+  title: string
+  url: string
+  press: string
+  pub_date: string
+  sentiment: string
+  evidence: string[]
+}
+// 카드뉴스용 핵심 토픽 — 패널 상단 그리드에 아이콘+헤드라인+짧은 설명으로 노출
+interface NewsTopicCard {
+  headline: string
+  desc: string
+  event_type: string
+  sentiment: string
+}
+interface NewsCompany {
+  corp_name: string
+  corp_code: string
+  summary: string
+  relevance: string
+  sentiment: string
+  cards?: NewsTopicCard[]
+  articles: NewsArticleCard[]
+}
+interface NewsData {
+  companies: NewsCompany[]
 }
 interface DocItem {
   rcept_no: string
@@ -71,7 +105,12 @@ interface Message {
   digest?: string
   // 답변 표시 후 별도 호출로 채우는 '핵심 사실 정리' — 받아오는 동안 true
   digestLoading?: boolean
-  // 저장된 메시지 id (digest 후속 호출에 사용)
+  // 뉴스 분석(지연 로딩). 1단계 카드 수집 동안 newsLoading=true (설계 §8)
+  news?: NewsData
+  newsLoading?: boolean
+  // 2단계 — 카드는 떴고 AI 요약(LLM)을 채우는 중이면 true (점진 렌더링)
+  analysisLoading?: boolean
+  // 저장된 메시지 id (digest·news 후속 호출에 사용)
   serverId?: number
 }
 interface SessionItem {
@@ -90,6 +129,10 @@ const sourceCount = (m?: { documents?: DocItem[] }) => dedupSources(m?.documents
 // 재무지표 차트: 백엔드 구조화 데이터(financials)나 답변 본문의 다년도 표 중 하나라도 있으면
 const hasFinancials = (m?: { financials?: FinancialGroup[]; content?: string }) =>
   !!m?.financials?.length || !!(m?.content && parseFinancialTable(m.content))
+const hasNews = (m?: { news?: NewsData }) => !!m?.news?.companies?.length
+
+// DART 공식 공시 뷰어 URL — 14자리 접수번호(rcept_no)로 결정적으로 만들 수 있다.
+const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}`
 
 // 새로고침해도 현재 대화를 유지하기 위해 활성 세션 ID 를 사용자별로 보관한다.
 const sessionStorageKey = (uid?: string) => `polaris_session:${uid || 'anon'}`
@@ -99,6 +142,138 @@ const GREETING: Message = {
   role: 'assistant',
   content:
     '기업 정보를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.\n답을 기다리는 동안 잠깐 별멍도 좋아요. ✦',
+}
+
+// 뉴스 논조 → 배지 색/라벨. 알 수 없으면 중립으로.
+const sentimentBadge = (s: string) => {
+  switch (s) {
+    case 'positive':
+      return { label: '긍정', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300' }
+    case 'negative':
+      return { label: '부정', cls: 'bg-rose-100 text-rose-700 dark:bg-rose-400/15 dark:text-rose-300' }
+    default:
+      return { label: '중립', cls: 'bg-slate-200 text-slate-600 dark:bg-white/10 dark:text-slate-300' }
+  }
+}
+const sentimentDot = (s: string) =>
+  s === 'positive' ? 'bg-emerald-400' : s === 'negative' ? 'bg-rose-400' : 'bg-slate-400'
+
+// 카드뉴스 — 이벤트 유형 → lucide 아이콘 (백엔드 event_type enum 과 동일 키)
+const eventTypeIcon = (t: string) => {
+  switch (t) {
+    case '실적':
+      return TrendingUp
+    case '증설':
+      return Factory
+    case 'HBM·신제품':
+      return Cpu
+    case '인사':
+      return Users
+    case '리스크':
+      return AlertTriangle
+    default:
+      return Newspaper
+  }
+}
+// 카드 좌측 컬러바 — 논조 색(점 색과 동일 체계)
+const sentimentBar = (s: string) =>
+  s === 'positive' ? 'bg-emerald-400' : s === 'negative' ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-500'
+
+// 카드뉴스 "한눈에 보기" 섹션 — 현재는 데모 이미지(public/cardnews.png)만 노출한다.
+// (동적 텍스트 카드 그리드는 비활성화 — 필요 시 cards 매핑 + eventTypeIcon/sentimentBar 로 복구)
+function NewsCardGrid() {
+  return (
+    <div className="mb-5">
+      <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
+        <Newspaper size={13} className="text-amber-500" /> 한눈에 보기
+      </div>
+      {/* 카드뉴스 데모 이미지 — 클릭하면 원본 크게 보기. (시연용 예시 이미지) */}
+      <a
+        href="/cardnews.png"
+        target="_blank"
+        rel="noreferrer"
+        title="크게 보기"
+        className="group relative block overflow-hidden rounded-xl border border-slate-200 dark:border-white/10"
+      >
+        <img
+          src="/cardnews.png"
+          alt="카드뉴스 예시"
+          loading="lazy"
+          className="w-full transition group-hover:opacity-95"
+        />
+      </a>
+    </div>
+  )
+}
+
+// 뉴스 분석 탭 — 기업 한 곳의 섹션.
+// 구조: 기업명/논조 → AI 분석(summary) → 공시 연관(relevance) → 출처 URL 목록(맨 밑)
+function NewsCompanySection({ co, analyzing }: { co: NewsCompany; analyzing?: boolean }) {
+  const badge = sentimentBadge(co.sentiment)
+  return (
+    <section className="space-y-2.5">
+      {/* 기업명 + 전반 논조 */}
+      <div className="flex items-center gap-2">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${sentimentDot(co.sentiment)}`} />
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{co.corp_name}</h3>
+        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>{badge.label}</span>
+      </div>
+
+      {/* AI 최근 동향 분석 — 메인 콘텐츠 */}
+      {co.summary ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] leading-relaxed text-slate-700 dark:border-amber-300/20 dark:bg-amber-300/[0.07] dark:text-slate-200">
+          <div className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+            <Sparkles size={11} /> AI 뉴스 분석
+          </div>
+          <Markdown text={co.summary} />
+        </div>
+      ) : analyzing ? (
+        <p className="flex items-center gap-1.5 text-[12px] text-slate-400">
+          <Sparkles size={11} className="animate-pulse text-amber-400" /> AI가 최근 동향을 분석하는 중…
+        </p>
+      ) : null}
+
+      {/* 공시 연관 — 있을 때만 */}
+      {co.relevance && (
+        <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2 text-[12px] leading-relaxed text-slate-600 dark:border-indigo-400/15 dark:bg-indigo-400/[0.05] dark:text-slate-300">
+          <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-indigo-500">
+            <FileText size={11} /> 공시 연관
+          </div>
+          <Markdown text={co.relevance} />
+        </div>
+      )}
+
+      {/* 최근 뉴스 목록 — 기사별 논조 점 + 제목(2줄) + 언론사·날짜 (URL은 링크로) */}
+      {co.articles.length > 0 && (
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            최근 뉴스 {co.articles.length}건
+          </p>
+          <ul className="space-y-1">
+            {co.articles.map((a, i) => (
+              <li key={a.url || i} className="flex items-start gap-1.5 text-[11px]">
+                <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${sentimentDot(a.sentiment)}`} />
+                <a
+                  href={a.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group min-w-0 flex-1 text-slate-500 hover:text-sky-500 dark:text-slate-400 dark:hover:text-sky-400"
+                  title={a.title}
+                >
+                  <span className="line-clamp-2 group-hover:underline">{a.title || a.url}</span>
+                  {(a.press || a.pub_date) && (
+                    <span className="mt-0.5 block text-[10px] text-slate-300 dark:text-slate-600">
+                      {[a.press, a.pub_date].filter(Boolean).join(' · ')}
+                    </span>
+                  )}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  )
 }
 
 export default function ChatApp() {
@@ -177,6 +352,7 @@ export default function ChatApp() {
         documents?: DocItem[]
         financials?: FinancialGroup[]
         digest?: string
+        news?: NewsData
       }[]
       const restored: Message[] = rows.map((r) => ({
         id: r.message_id,
@@ -187,6 +363,9 @@ export default function ChatApp() {
         documents: r.documents || [],
         financials: r.financials || [],
         digest: r.digest || '',
+        // 저장된 뉴스 분석을 그대로 복원(추가 fetch 없음, 설계 §8)
+        news: r.news || { companies: [] },
+        serverId: r.message_id,
       }))
       setMessages(restored.length ? [GREETING, ...restored] : [GREETING])
     } catch (e) {
@@ -268,6 +447,8 @@ export default function ChatApp() {
     if (hasGraph(activeData ?? undefined)) tabs.push('constellation')
     if (hasFinancials(activeData ?? undefined)) tabs.push('financials')
     if (hasDocs(activeData ?? undefined)) tabs.push('documents')
+    // 뉴스 분석 — 데이터가 있거나 로딩 중이면 탭 노출(기존 탭 로직은 그대로, 한 줄 추가)
+    if (hasNews(activeData ?? undefined) || activeData?.newsLoading) tabs.push('news')
     return tabs
   }, [activeData])
 
@@ -319,6 +500,15 @@ export default function ChatApp() {
     }
   }
 
+  // 뉴스 분석 버튼: 같은 메시지의 뉴스 탭이 열려 있으면 닫고, 아니면 연다
+  const toggleNews = (msgId: number) => {
+    if (rightOpen && activeMsgId === msgId && activePanel === 'news') {
+      setRightOpen(false)
+    } else {
+      openPanel(msgId, 'news')
+    }
+  }
+
   const handleSend = async () => {
     const text = input.trim()
     if (!text || loading || !user) return
@@ -359,6 +549,9 @@ export default function ChatApp() {
       // digest(핵심 사실 정리)는 답변 표시 후 별도로 받아온다. 문서가 있으면 로딩 표시.
       const serverId: number = data.message_id || 0
       const willLoadDigest = !!serverId && documents.length > 0
+      // 뉴스 분석 — 근거(문서 또는 관계도)가 나온 턴에서만 별도 호출(설계 §2-결정1, §8).
+      // 트리거 판정을 프론트가 이미 가진 응답 데이터로 하므로 백엔드 핫패스에 부담 없음.
+      const willLoadNews = !!serverId && (documents.length > 0 || graph.edges.length > 0)
       setMessages((prev) => [
         ...prev,
         {
@@ -370,8 +563,10 @@ export default function ChatApp() {
           documents,
           financials,
           digest: data.digest || '',
+          news: { companies: [] },
           serverId,
           digestLoading: willLoadDigest,
+          newsLoading: willLoadNews,
         },
       ])
       // 이 답변을 타자기 효과 대상으로 지정
@@ -407,6 +602,62 @@ export default function ChatApp() {
           })
       }
 
+      // 뉴스 분석은 점진 렌더링(설계 §8): 1단계로 뉴스 카드를 먼저 띄우고(~3초),
+      // 2단계로 AI 요약(LLM, ~30초)을 채운다. 체감 대기를 30초→3초로 줄인다. 둘 다 비차단.
+      if (willLoadNews) {
+        // 1단계 — 카드만 빠르게(fetch만, LLM 없음)
+        fetch(`${API_BASE}/api/chat/news/cards`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_id: serverId }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (loadSeqRef.current !== seq) return // 세션을 이동했으면 버린다
+            const cards = (d && d.news) || { companies: [] }
+            const hasCards = cards.companies.length > 0
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === msgId
+                  ? { ...m, news: cards, newsLoading: false, analysisLoading: hasCards }
+                  : m,
+              ),
+            )
+            if (!hasCards) return // 뉴스 없음 → 2단계 불필요
+
+            // 2단계 — AI 분석(LLM)으로 요약 채우기. 1단계가 캐시한 원본을 재사용해 재fetch 없음.
+            fetch(`${API_BASE}/api/chat/news`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message_id: serverId }),
+            })
+              .then((r) => (r.ok ? r.json() : null))
+              .then((d2) => {
+                if (loadSeqRef.current !== seq) return
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === msgId
+                      ? { ...m, news: (d2 && d2.news) || cards, analysisLoading: false }
+                      : m,
+                  ),
+                )
+              })
+              .catch(() => {
+                // 분석 실패 — 카드는 그대로 두고 '분석 중' 표시만 끈다(degrade).
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === msgId ? { ...m, analysisLoading: false } : m)),
+                )
+              })
+          })
+          .catch(() => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === msgId ? { ...m, newsLoading: false, analysisLoading: false } : m,
+              ),
+            )
+          })
+      }
+
       // 사이드바 목록 갱신(새 세션이면 새로 나타나고, 제목/시간 최신화)
       refreshSessions()
     } catch (error) {
@@ -432,6 +683,7 @@ export default function ChatApp() {
     constellation: { label: '관계도', icon: Network },
     financials: { label: '재무지표 차트', icon: BarChart2 },
     documents: { label: '원본 문서', icon: FileText },
+    news: { label: '뉴스 분석', icon: Newspaper },
   }
 
   return (
@@ -651,7 +903,7 @@ export default function ChatApp() {
                           </div>
 
                           {/* 근거 버튼들 — 타이핑 끝난 뒤 노출. 우측 패널 탭을 연다 */}
-                          {typingId !== m.id && (hasDocs(m) || hasGraph(m) || hasFinancials(m)) && (
+                          {typingId !== m.id && (hasDocs(m) || hasGraph(m) || hasFinancials(m) || hasNews(m) || m.newsLoading) && (
                             <div className="flex w-full flex-wrap justify-end gap-1.5">
                               {hasFinancials(m) && (
                                 <button
@@ -687,6 +939,22 @@ export default function ChatApp() {
                                   }`}
                                 >
                                   <Network size={12} /> 관계도
+                                </button>
+                              )}
+                              {(hasNews(m) || m.newsLoading) && (
+                                <button
+                                  onClick={() => toggleNews(m.id)}
+                                  disabled={m.newsLoading && !hasNews(m)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition disabled:cursor-default ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'news'
+                                      ? 'border-amber-400 bg-amber-100 text-amber-700 dark:border-amber-400/40 dark:bg-amber-400/20 dark:text-amber-200'
+                                      : 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100 dark:border-amber-300/20 dark:bg-amber-300/10 dark:text-amber-300 dark:hover:bg-amber-300/20'
+                                  }`}
+                                >
+                                  <Newspaper size={11} />
+                                  {hasNews(m)
+                                    ? `뉴스 분석 ${m.news!.companies.length}건`
+                                    : '뉴스 분석 중…'}
                                 </button>
                               )}
                             </div>
@@ -910,6 +1178,37 @@ export default function ChatApp() {
                   <p className="text-xs text-slate-400">조회된 원본 문서가 없습니다.</p>
                 )
               )}
+
+              {/* ───── 뉴스 분석 (4번째 탭, 추가) ───── */}
+              {activePanel === 'news' &&
+                (hasNews(activeData ?? undefined) ? (
+                  <div className="space-y-5">
+                    {/* 카드뉴스 — 핵심 토픽 한눈에. 분석(2단계)이 끝나야 cards 가 채워지므로
+                        분석 중엔 비어 그리드가 자동으로 숨는다. */}
+                    <NewsCardGrid />
+                    {/* AI 뉴스 분석 — 기업별 상세 글(기존) */}
+                    <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
+                      <Sparkles size={13} className="text-amber-500" /> AI 뉴스 분석
+                    </div>
+                    {activeData!.news!.companies.map((co) => (
+                      <NewsCompanySection
+                        key={co.corp_code || co.corp_name}
+                        co={co}
+                        analyzing={activeData?.analysisLoading}
+                      />
+                    ))}
+                    <p className="pt-1 text-[10px] leading-relaxed text-slate-400">
+                      뉴스 원문은 분석 입력으로만 사용하며 저장·재배포하지 않습니다. 제목·요약·링크만 표시합니다.
+                    </p>
+                  </div>
+                ) : activeData?.newsLoading ? (
+                  <p className="flex items-center gap-1.5 text-[12px] text-slate-400">
+                    <Newspaper size={13} className="animate-pulse text-amber-400" />
+                    최근 뉴스를 분석하는 중…
+                  </p>
+                ) : (
+                  <p className="text-xs text-slate-400">관련 뉴스를 찾지 못했습니다.</p>
+                ))}
             </div>
           </div>
         </aside>
