@@ -5,9 +5,8 @@ import {
   X,
   Plus,
   Search,
-  MessageSquare,
+  Trash2,
   Send,
-  Sparkles,
   FileText,
   PanelRightClose,
   PanelRightOpen,
@@ -17,14 +16,17 @@ import {
   LogOut,
   Network,
   BarChart2,
+  Sparkles,
   Newspaper,
   TrendingUp,
   Factory,
   Cpu,
   Users,
   AlertTriangle,
+  Layers,
 } from 'lucide-react'
 import StarField from '../components/StarField'
+import PolarisStar from '../components/PolarisStar'
 import ThemeToggle from '../components/ThemeToggle'
 import SettingsMenu from '../components/SettingsMenu'
 import type { GNode, GEdge } from '../components/NetworkGraph'
@@ -32,7 +34,8 @@ import Constellation from '../components/Constellation'
 import LoadingConstellation from '../components/LoadingConstellation'
 import Markdown from '../components/Markdown'
 import TypingMarkdown from '../components/TypingMarkdown'
-import FinancialChart, { type FinancialGroup, stripFinancialTable, parseFinancialTable } from '../components/FinancialChart'
+import FinancialChart, { type FinancialGroup, type RatioGroup, stripFinancialTable, parseFinancialTable } from '../components/FinancialChart'
+import OwnershipPanel, { type OwnershipData } from '../components/OwnershipPanel'
 import { SourceList, dedupSources } from '../components/DocDrawer'
 import { printReport, splitDigestByReport } from '../lib/print'
 import { API_BASE, getUser, clearUser } from '../lib/auth'
@@ -45,8 +48,8 @@ import { API_BASE, getUser, clearUser } from '../lib/auth'
    ────────────────────────────────────────────────────────────── */
 
 type Role = 'user' | 'assistant'
-// 우측 패널 탭: 별자리(관계도) + 원본 문서 + 재무지표 차트 + 뉴스 분석
-type PanelKey = 'constellation' | 'documents' | 'financials' | 'news'
+// 우측 패널 탭: 별자리(관계도) + 재무지표 차트 + 지분·관계 + 원본 문서 + 뉴스 분석
+type PanelKey = 'constellation' | 'documents' | 'financials' | 'ownership' | 'news'
 
 interface GraphData {
   nodes: GNode[]
@@ -102,6 +105,8 @@ interface Message {
   graph?: GraphData
   documents?: DocItem[]
   financials?: FinancialGroup[]
+  ratios?: RatioGroup[]
+  ownership?: OwnershipData
   digest?: string
   // 답변 표시 후 별도 호출로 채우는 '핵심 사실 정리' — 받아오는 동안 true
   digestLoading?: boolean
@@ -126,10 +131,13 @@ const hasDocs = (m?: { documents?: DocItem[] }) => !!m?.documents?.length
 // 원본 문서 버튼에 표시할 건수 — 패널 '출처'(SourceList)와 동일하게 보고서 단위로
 // 중복 제거한 수. 두 곳이 같은 dedupSources 기준을 쓰므로 숫자가 항상 일치한다.
 const sourceCount = (m?: { documents?: DocItem[] }) => dedupSources(m?.documents ?? []).length
-// 재무지표 차트: 백엔드 구조화 데이터(financials)나 답변 본문의 다년도 표 중 하나라도 있으면
-const hasFinancials = (m?: { financials?: FinancialGroup[]; content?: string }) =>
-  !!m?.financials?.length || !!(m?.content && parseFinancialTable(m.content))
+// 재무지표 차트: 백엔드 구조화 데이터(financials)·재무비율(ratios)·답변 본문 다년도 표 중 하나라도
+const hasFinancials = (m?: { financials?: FinancialGroup[]; ratios?: RatioGroup[]; content?: string }) =>
+  !!m?.financials?.length || !!m?.ratios?.length || !!(m?.content && parseFinancialTable(m.content))
 const hasNews = (m?: { news?: NewsData }) => !!m?.news?.companies?.length
+// 지분·관계: 최대주주 또는 타법인출자 데이터가 있으면
+const hasOwnership = (m?: { ownership?: OwnershipData }) =>
+  !!(m?.ownership && ((m.ownership.shareholders?.length ?? 0) || (m.ownership.investments?.length ?? 0)))
 
 // DART 공식 공시 뷰어 URL — 14자리 접수번호(rcept_no)로 결정적으로 만들 수 있다.
 const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rceptNo}`
@@ -137,11 +145,55 @@ const dartUrl = (rceptNo: string) => `https://dart.fss.or.kr/dsaf001/main.do?rcp
 // 새로고침해도 현재 대화를 유지하기 위해 활성 세션 ID 를 사용자별로 보관한다.
 const sessionStorageKey = (uid?: string) => `polaris_session:${uid || 'anon'}`
 
+// last_at(파이썬 datetime 문자열, 로컬시각) → epoch ms. 못 읽으면 0.
+const parseTime = (iso: string): number => {
+  const t = new Date((iso || '').replace(' ', 'T')).getTime()
+  return Number.isFinite(t) ? t : 0
+}
+
+// 현재 로컬시각을 백엔드 last_at 과 같은 'YYYY-MM-DD HH:MM:SS' 형식으로 — parseTime 이 그대로 읽는다.
+// 낙관적으로 사이드바에 추가할 새 세션의 시간 표시(방금/오늘)를 정확히 맞추기 위함.
+const nowLocalString = (): string => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  const d = new Date()
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+// 사이드바 행 우측에 표시할 상대 시간 — 방금 / N분 전 / N시간 전 / N일 전 / M월 D일
+const relativeTime = (iso: string): string => {
+  const t = parseTime(iso)
+  if (!t) return ''
+  const min = Math.floor((Date.now() - t) / 60000)
+  if (min < 1) return '방금'
+  if (min < 60) return `${min}분 전`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}시간 전`
+  const day = Math.floor(hr / 24)
+  if (day < 7) return `${day}일 전`
+  const d = new Date(t)
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`
+}
+
+// 날짜 그룹 헤더 — 오늘 / 어제 / 지난 7일 / 지난 30일 / 이전
+const GROUP_ORDER = ['오늘', '어제', '지난 7일', '지난 30일', '이전'] as const
+const dateGroup = (iso: string): (typeof GROUP_ORDER)[number] => {
+  const t = parseTime(iso)
+  if (!t) return '이전'
+  const now = new Date()
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const DAY = 86400000
+  if (t >= startToday) return '오늘'
+  if (t >= startToday - DAY) return '어제'
+  if (t >= startToday - 7 * DAY) return '지난 7일'
+  if (t >= startToday - 30 * DAY) return '지난 30일'
+  return '이전'
+}
+
 const GREETING: Message = {
   id: 0,
   role: 'assistant',
   content:
-    '기업 정보를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.\n답을 기다리는 동안 잠깐 별멍도 좋아요. ✦',
+    '기업 정보를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.\n답을 기다리는 동안 잠깐 별멍도 좋아요.',
 }
 
 // 뉴스 논조 → 배지 색/라벨. 알 수 없으면 중립으로.
@@ -283,10 +335,13 @@ export default function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([GREETING])
   const [input, setInput] = useState('')
   const [sessions, setSessions] = useState<SessionItem[]>([])
+  const [query, setQuery] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [rightOpen, setRightOpen] = useState(false)
   const [inputFocused, setInputFocused] = useState(false)
-  const [loading, setLoading] = useState(false)
+  // 응답 대기 중인 세션 id(없으면 null). 전역 boolean 대신 세션별로 추적해야,
+  // 로딩 중 다른 대화로 갔다 돌아와도 그 세션의 로딩 표시가 유지된다.
+  const [loadingSid, setLoadingSid] = useState<string | null>(null)
 
   // 우측 패널 상태 (원본 문서 전용)
   const [activeMsgId, setActiveMsgId] = useState<number | null>(null)
@@ -299,8 +354,12 @@ export default function ChatApp() {
   const [sessionId, setSessionId] = useState(
     () => localStorage.getItem(sessionStorageKey(user?.user_id)) || `session_${Date.now()}`,
   )
-  // 세션 이동/새 대화마다 증가하는 토큰 — 요청 중 한 번이라도 바뀌면 그 응답을 버린다
-  const loadSeqRef = useRef(0)
+  // 항상 현재 세션 id 를 가리키는 ref — 응답이 도착했을 때 "지금 보고 있는 세션"과
+  // 비교해 폐기 여부를 판단한다(떠났으면 버리고, 돌아와 있으면 그대로 반영).
+  const sessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
   const [panelWidth, setPanelWidth] = useState(() => Math.round(window.innerWidth * 0.35))
   // 드래그로 크기 조절 중엔 너비 transition 을 꺼서 끊김 없이 따라오게 한다
   const [dragging, setDragging] = useState(false)
@@ -309,6 +368,8 @@ export default function ChatApp() {
   const dragStartWidth = useRef(0)
 
   const started = messages.some((m) => m.role === 'user')
+  // 지금 보고 있는 세션이 응답 대기 중일 때만 로딩 표시
+  const loading = loadingSid === sessionId
 
   // 로그인 안 했으면 진입 화면으로 돌려보낸다
   useEffect(() => {
@@ -333,13 +394,13 @@ export default function ChatApp() {
 
   // 사이드바에서 과거 세션 선택 → 메시지 기록 복원
   const loadSession = useCallback(async (sid: string) => {
-    loadSeqRef.current += 1 // 진행 중이던 요청 무효화
     setSessionId(sid)
     setDrawerOpen(false)
     setActiveMsgId(null)
     setRightOpen(false)
     setTypingId(null)
-    setLoading(false) // 이전 세션의 로딩 표시가 따라오지 않게
+    // loading 표시는 세션별(loadingSid)이라 여기서 끄지 않는다 — 응답 대기 중인
+    // 세션으로 돌아오면 로딩이 다시 보여야 한다.
     try {
       const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sid)}/messages`)
       if (!res.ok) throw new Error(`${res.status}`)
@@ -351,6 +412,8 @@ export default function ChatApp() {
         graph?: GraphData
         documents?: DocItem[]
         financials?: FinancialGroup[]
+        ratios?: RatioGroup[]
+        ownership?: OwnershipData
         digest?: string
         news?: NewsData
       }[]
@@ -362,6 +425,8 @@ export default function ChatApp() {
         graph: r.graph || { nodes: [], edges: [] },
         documents: r.documents || [],
         financials: r.financials || [],
+        ratios: r.ratios || [],
+        ownership: r.ownership || { shareholders: [], investments: [] },
         digest: r.digest || '',
         // 저장된 뉴스 분석을 그대로 복원(추가 fetch 없음, 설계 §8)
         news: r.news || { companies: [] },
@@ -381,10 +446,49 @@ export default function ChatApp() {
     setRightOpen(false)
     setDrawerOpen(false)
     setTypingId(null)
-    setLoading(false) // 진행 중이던 로딩 표시 제거
-    loadSeqRef.current += 1 // 진행 중이던 요청 무효화
     setSessionId(`session_${Date.now()}`)
   }, [])
+
+  // 대화 삭제 — 소유자 본인 것만(백엔드에서 user_id 로 검증). 보던 대화면 새 대화로.
+  const deleteSession = useCallback(
+    async (sid: string) => {
+      if (!user) return
+      if (!window.confirm('이 대화를 삭제할까요? 되돌릴 수 없습니다.')) return
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/sessions/${encodeURIComponent(sid)}?user_id=${encodeURIComponent(
+            user.user_id,
+          )}`,
+          { method: 'DELETE' },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        setSessions((prev) => prev.filter((s) => s.session_id !== sid))
+        if (sid === sessionId) startNewChat()
+      } catch (e) {
+        console.error('대화 삭제 실패:', e)
+      }
+    },
+    [user, sessionId, startNewChat],
+  )
+
+  // 검색 필터 + 날짜 그룹핑 (sessions 는 백엔드에서 이미 최신순이라 그룹 내 순서 유지)
+  const groupedSessions = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const filtered = q
+      ? sessions.filter((s) => s.title.toLowerCase().includes(q))
+      : sessions
+    const map = new Map<string, SessionItem[]>()
+    for (const s of filtered) {
+      const g = dateGroup(s.last_at)
+      const arr = map.get(g)
+      if (arr) arr.push(s)
+      else map.set(g, [s])
+    }
+    return GROUP_ORDER.filter((g) => map.has(g)).map((g) => ({
+      group: g,
+      items: map.get(g)!,
+    }))
+  }, [sessions, query])
 
   // 활성 세션 ID 보관 → 새로고침해도 같은 대화로 돌아온다.
   useEffect(() => {
@@ -446,6 +550,7 @@ export default function ChatApp() {
     const tabs: PanelKey[] = []
     if (hasGraph(activeData ?? undefined)) tabs.push('constellation')
     if (hasFinancials(activeData ?? undefined)) tabs.push('financials')
+    if (hasOwnership(activeData ?? undefined)) tabs.push('ownership')
     if (hasDocs(activeData ?? undefined)) tabs.push('documents')
     // 뉴스 분석 — 데이터가 있거나 로딩 중이면 탭 노출(기존 탭 로직은 그대로, 한 줄 추가)
     if (hasNews(activeData ?? undefined) || activeData?.newsLoading) tabs.push('news')
@@ -509,17 +614,37 @@ export default function ChatApp() {
     }
   }
 
+  // 지분·관계 버튼: 같은 메시지의 지분 탭이 열려 있으면 닫고, 아니면 연다
+  const toggleOwnership = (msgId: number) => {
+    if (rightOpen && activeMsgId === msgId && activePanel === 'ownership') {
+      setRightOpen(false)
+    } else {
+      openPanel(msgId, 'ownership')
+    }
+  }
+
   const handleSend = async () => {
     const text = input.trim()
     if (!text || loading || !user) return
 
-    // 이 요청이 속한 세션 + 이동 토큰 — 응답 도착 시 그대로면 반영, 바뀌었으면 버린다
+    // 이 요청이 속한 세션 — 응답 도착 시 같은 세션을 보고 있으면 반영, 떠나 있으면 버린다
     const sid = sessionId
-    const seq = loadSeqRef.current
 
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: text }])
     setInput('')
-    setLoading(true)
+    setLoadingSid(sid)
+
+    // 새 채팅이면 응답을 기다리지 않고 사이드바에 즉시 추가한다(생성 중에도 보이도록).
+    // 서버는 요청 시작 시점에 세션을 만들지만 목록 갱신은 응답 후라, 그 사이 새 채팅이
+    // 사이드바에서 보이지 않던 공백을 메운다. 응답 후 refreshSessions 가 서버값으로 정합화.
+    setSessions((prev) => {
+      if (prev.some((s) => s.session_id === sid)) return prev // 기존 세션이면 그대로
+      const title = text.length > 30 ? `${text.slice(0, 30)}…` : text
+      return [
+        { session_id: sid, title, preview: text.slice(0, 60), message_count: 1, last_at: nowLocalString() },
+        ...prev,
+      ]
+    })
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
@@ -535,8 +660,8 @@ export default function ChatApp() {
       if (!response.ok) throw new Error(`API 오류: ${response.status}`)
 
       const data = await response.json()
-      // 응답을 기다리는 동안 세션을 이동했다면 이 결과는 버린다(서버엔 저장돼 재방문 시 복원됨)
-      if (loadSeqRef.current !== seq) {
+      // 응답을 기다리는 동안 다른 세션을 보고 있으면 이 결과는 버린다(서버엔 저장돼 재방문 시 복원됨)
+      if (sessionIdRef.current !== sid) {
         refreshSessions()
         return
       }
@@ -545,6 +670,8 @@ export default function ChatApp() {
       const graph: GraphData = data.graph || { nodes: [], edges: [] }
       const documents: DocItem[] = data.documents || []
       const financials: FinancialGroup[] = data.financials || []
+      const ratios: RatioGroup[] = data.ratios || []
+      const ownership: OwnershipData = data.ownership || { shareholders: [], investments: [] }
 
       // digest(핵심 사실 정리)는 답변 표시 후 별도로 받아온다. 문서가 있으면 로딩 표시.
       const serverId: number = data.message_id || 0
@@ -562,6 +689,8 @@ export default function ChatApp() {
           graph,
           documents,
           financials,
+          ratios,
+          ownership,
           digest: data.digest || '',
           news: { companies: [] },
           serverId,
@@ -588,7 +717,7 @@ export default function ChatApp() {
         })
           .then((r) => (r.ok ? r.json() : null))
           .then((d) => {
-            if (loadSeqRef.current !== seq) return // 세션을 이동했으면 버린다
+            if (sessionIdRef.current !== sid) return // 다른 세션을 보고 있으면 버린다
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === msgId ? { ...m, digest: (d && d.digest) || '', digestLoading: false } : m,
@@ -613,7 +742,7 @@ export default function ChatApp() {
         })
           .then((r) => (r.ok ? r.json() : null))
           .then((d) => {
-            if (loadSeqRef.current !== seq) return // 세션을 이동했으면 버린다
+            if (sessionIdRef.current !== sid) return // 세션을 이동했으면 버린다
             const cards = (d && d.news) || { companies: [] }
             const hasCards = cards.companies.length > 0
             setMessages((prev) =>
@@ -633,7 +762,7 @@ export default function ChatApp() {
             })
               .then((r) => (r.ok ? r.json() : null))
               .then((d2) => {
-                if (loadSeqRef.current !== seq) return
+                if (sessionIdRef.current !== sid) return
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === msgId
@@ -663,7 +792,7 @@ export default function ChatApp() {
     } catch (error) {
       console.error('API 통신 실패:', error)
       // 보낸 세션을 떠났으면 에러 메시지를 남기지 않는다
-      if (loadSeqRef.current === seq) {
+      if (sessionIdRef.current === sid) {
         setMessages((prev) => [
           ...prev,
           {
@@ -673,15 +802,18 @@ export default function ChatApp() {
           },
         ])
       }
+      // 서버는 요청 시작 시 세션을 만들었을 수 있으니 목록을 서버값으로 맞춘다
+      refreshSessions()
     } finally {
-      // 이동하지 않았을 때만 로딩 표시를 끈다(이동했으면 이미 꺼져 있음)
-      if (loadSeqRef.current === seq) setLoading(false)
+      // 이 요청이 끝났으니, 이 세션을 아직 대기 상태로 잡고 있으면 해제한다
+      setLoadingSid((cur) => (cur === sid ? null : cur))
     }
   }
 
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
     constellation: { label: '관계도', icon: Network },
     financials: { label: '재무지표 차트', icon: BarChart2 },
+    ownership: { label: '지분·관계', icon: Layers },
     documents: { label: '원본 문서', icon: FileText },
     news: { label: '뉴스 분석', icon: Newspaper },
   }
@@ -758,40 +890,70 @@ export default function ChatApp() {
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
             <Search size={14} className="text-slate-400" />
             <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
               placeholder="대화 검색"
               className="w-full bg-transparent text-sm placeholder:text-slate-400 focus:outline-none"
             />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10"
+                aria-label="검색어 지우기"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
-        <div className="no-scrollbar mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
-          <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
-            최근 대화
-          </p>
+        <div className="no-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto px-3 py-2">
           {sessions.length === 0 && (
             <p className="px-2 py-3 text-xs text-slate-400">아직 대화 기록이 없습니다.</p>
           )}
-          {sessions.map((s) => (
-            <button
-              key={s.session_id}
-              onClick={() => loadSession(s.session_id)}
-              className={`group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
-                sessionId === s.session_id
-                  ? 'bg-blue-600/10 dark:bg-white/[0.08]'
-                  : 'hover:bg-slate-100 dark:hover:bg-white/[0.04]'
-              }`}
-            >
-              <MessageSquare
-                size={15}
-                className={`mt-0.5 shrink-0 ${
-                  sessionId === s.session_id ? 'text-blue-500' : 'text-slate-400'
-                }`}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">{s.title}</span>
-                <span className="block truncate text-xs text-slate-400">{s.preview}</span>
-              </span>
-              <span className="shrink-0 text-[10px] text-slate-400">{s.message_count}</span>
-            </button>
+          {sessions.length > 0 && groupedSessions.length === 0 && (
+            <p className="px-2 py-3 text-xs text-slate-400">검색 결과가 없습니다.</p>
+          )}
+          {groupedSessions.map(({ group, items }) => (
+            <div key={group} className="mb-1">
+              <p className="px-2 pb-1 pt-2 text-[11px] font-medium text-slate-400">{group}</p>
+              {items.map((s) => {
+                const active = sessionId === s.session_id
+                return (
+                  <div
+                    key={s.session_id}
+                    className={`group relative flex w-full items-center rounded-lg transition ${
+                      active
+                        ? 'bg-blue-600/10 dark:bg-white/[0.08]'
+                        : 'hover:bg-slate-100 dark:hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    {active && (
+                      <span className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-blue-500" />
+                    )}
+                    <button
+                      onClick={() => loadSession(s.session_id)}
+                      className="flex min-w-0 flex-1 items-center py-2 pl-2.5 pr-1 text-left"
+                    >
+                      <span className="block min-w-0 flex-1 truncate text-sm font-medium">
+                        {s.title}
+                      </span>
+                    </button>
+                    {/* 평소엔 상대시간, hover 시 삭제 버튼으로 교체 */}
+                    <span className="shrink-0 pr-2.5 text-[11px] text-slate-400 group-hover:hidden">
+                      {relativeTime(s.last_at)}
+                    </span>
+                    <button
+                      onClick={() => deleteSession(s.session_id)}
+                      className="hidden shrink-0 place-items-center py-2 pl-1 pr-2.5 text-slate-400 transition hover:text-red-500 group-hover:grid"
+                      title="대화 삭제"
+                      aria-label="대화 삭제"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
           ))}
         </div>
 
@@ -883,7 +1045,7 @@ export default function ChatApp() {
                     return (
                       <div key={m.id} style={{ animation: 'polarisRise .4s ease both' }} className="flex items-start gap-3">
                         <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-sky-300 to-blue-600 text-white shadow-md shadow-blue-500/30">
-                          <Sparkles size={14} />
+                          <PolarisStar size={18} />
                         </span>
                         <div className="flex w-full min-w-0 max-w-[85%] flex-col items-start gap-2">
 
@@ -905,6 +1067,18 @@ export default function ChatApp() {
                           {/* 근거 버튼들 — 타이핑 끝난 뒤 노출. 우측 패널 탭을 연다 */}
                           {typingId !== m.id && (hasDocs(m) || hasGraph(m) || hasFinancials(m) || hasNews(m) || m.newsLoading) && (
                             <div className="flex w-full flex-wrap justify-end gap-1.5">
+                              {hasGraph(m) && (
+                                <button
+                                  onClick={() => toggleConstellation(m.id)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'constellation'
+                                      ? 'border-indigo-400 bg-indigo-100 text-indigo-700 dark:border-indigo-400/40 dark:bg-indigo-400/20 dark:text-indigo-200'
+                                      : 'border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-300 dark:hover:bg-indigo-400/20'
+                                  }`}
+                                >
+                                  <Network size={12} /> 관계도
+                                </button>
+                              )}
                               {hasFinancials(m) && (
                                 <button
                                   onClick={() => toggleFinancials(m.id)}
@@ -917,6 +1091,18 @@ export default function ChatApp() {
                                   <BarChart2 size={12} /> 재무지표 차트
                                 </button>
                               )}
+                              {hasOwnership(m) && (
+                                <button
+                                  onClick={() => toggleOwnership(m.id)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'ownership'
+                                      ? 'border-teal-400 bg-teal-100 text-teal-700 dark:border-teal-400/40 dark:bg-teal-400/20 dark:text-teal-200'
+                                      : 'border-teal-200 bg-teal-50 text-teal-600 hover:bg-teal-100 dark:border-teal-300/20 dark:bg-teal-300/10 dark:text-teal-300 dark:hover:bg-teal-300/20'
+                                  }`}
+                                >
+                                  <Layers size={12} /> 지분·관계
+                                </button>
+                              )}
                               {hasDocs(m) && (
                                 <button
                                   onClick={() => toggleDocuments(m.id)}
@@ -927,18 +1113,6 @@ export default function ChatApp() {
                                   }`}
                                 >
                                   <FileText size={11} /> 원본 문서 {sourceCount(m)}건
-                                </button>
-                              )}
-                              {hasGraph(m) && (
-                                <button
-                                  onClick={() => toggleConstellation(m.id)}
-                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
-                                    rightOpen && activeMsgId === m.id && activePanel === 'constellation'
-                                      ? 'border-indigo-400 bg-indigo-100 text-indigo-700 dark:border-indigo-400/40 dark:bg-indigo-400/20 dark:text-indigo-200'
-                                      : 'border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-300 dark:hover:bg-indigo-400/20'
-                                  }`}
-                                >
-                                  <Network size={12} /> 관계도
                                 </button>
                               )}
                               {(hasNews(m) || m.newsLoading) && (
@@ -971,8 +1145,10 @@ export default function ChatApp() {
 
             {/* 입력 컴포저 */}
             <div
-              className={`w-full shrink-0 px-6 transition-all duration-500 ${
-                started ? 'border-t border-slate-200 py-4 dark:border-white/[0.06]' : 'pb-2'
+              className={`w-full shrink-0 border-t px-6 transition-all duration-500 ${
+                started
+                  ? 'border-slate-200 py-4 dark:border-white/[0.06]'
+                  : 'border-transparent pb-2'
               }`}
             >
               <div className="mx-auto max-w-3xl">
@@ -990,7 +1166,7 @@ export default function ChatApp() {
                           handleSend()
                         }
                       }}
-                      placeholder="공시나 종목에 대해 물어보세요…  (Shift+Enter 줄바꿈)"
+                      placeholder="궁금한 기업의 정보에 대해 물어보세요…"
                       className="no-scrollbar max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none"
                     />
                     <button
@@ -1092,11 +1268,23 @@ export default function ChatApp() {
                 hasFinancials(activeData ?? undefined) ? (
                   <FinancialChart
                     financials={activeData?.financials ?? []}
+                    ratios={activeData?.ratios ?? []}
                     sourceText={activeData?.content}
                     panelMode
                   />
                 ) : (
                   <p className="text-xs text-slate-400">표시할 재무지표가 없습니다.</p>
+                )
+              )}
+
+              {/* ───── 지분·관계 (최대주주 · 타법인출자) ───── */}
+              {activePanel === 'ownership' && (
+                hasOwnership(activeData ?? undefined) ? (
+                  <OwnershipPanel
+                    data={activeData?.ownership ?? { shareholders: [], investments: [] }}
+                  />
+                ) : (
+                  <p className="text-xs text-slate-400">표시할 지분·관계 데이터가 없습니다.</p>
                 )
               )}
 
@@ -1108,7 +1296,7 @@ export default function ChatApp() {
                     {(!!activeData?.digest || activeData?.digestLoading) && (
                       <div className="mb-4">
                         <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
-                          <Sparkles size={13} className="text-indigo-500" />
+                          <PolarisStar size={13} className="text-indigo-500" />
                           AI가 정리한 원문
                         </div>
                         {activeData?.digest ? (
@@ -1160,7 +1348,7 @@ export default function ChatApp() {
                         ) : (
                           <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 shadow-sm dark:border-slate-300/30 dark:bg-slate-100">
                             <span className="flex items-center gap-1.5 text-[12px] text-slate-400">
-                              <Sparkles size={12} className="animate-pulse text-indigo-400" />
+                              <PolarisStar size={12} className="animate-pulse text-indigo-400" />
                               원문을 정리하는 중…
                             </span>
                           </div>
