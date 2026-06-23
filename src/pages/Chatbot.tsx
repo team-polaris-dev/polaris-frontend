@@ -16,7 +16,6 @@ import {
   LogOut,
   Network,
   BarChart2,
-  Square,
 } from 'lucide-react'
 import StarField from '../components/StarField'
 import PolarisStar from '../components/PolarisStar'
@@ -101,6 +100,14 @@ const parseTime = (iso: string): number => {
   return Number.isFinite(t) ? t : 0
 }
 
+// 현재 로컬시각을 백엔드 last_at 과 같은 'YYYY-MM-DD HH:MM:SS' 형식으로 — parseTime 이 그대로 읽는다.
+// 낙관적으로 사이드바에 추가할 새 세션의 시간 표시(방금/오늘)를 정확히 맞추기 위함.
+const nowLocalString = (): string => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  const d = new Date()
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 // 사이드바 행 우측에 표시할 상대 시간 — 방금 / N분 전 / N시간 전 / N일 전 / M월 D일
 const relativeTime = (iso: string): string => {
   const t = parseTime(iso)
@@ -149,9 +156,9 @@ export default function ChatApp() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [rightOpen, setRightOpen] = useState(false)
   const [inputFocused, setInputFocused] = useState(false)
-  const [loading, setLoading] = useState(false)
-  // 진행 중인 채팅 요청을 중지하기 위한 컨트롤러
-  const abortRef = useRef<AbortController | null>(null)
+  // 응답 대기 중인 세션 id(없으면 null). 전역 boolean 대신 세션별로 추적해야,
+  // 로딩 중 다른 대화로 갔다 돌아와도 그 세션의 로딩 표시가 유지된다.
+  const [loadingSid, setLoadingSid] = useState<string | null>(null)
 
   // 우측 패널 상태 (원본 문서 전용)
   const [activeMsgId, setActiveMsgId] = useState<number | null>(null)
@@ -164,8 +171,12 @@ export default function ChatApp() {
   const [sessionId, setSessionId] = useState(
     () => localStorage.getItem(sessionStorageKey(user?.user_id)) || `session_${Date.now()}`,
   )
-  // 세션 이동/새 대화마다 증가하는 토큰 — 요청 중 한 번이라도 바뀌면 그 응답을 버린다
-  const loadSeqRef = useRef(0)
+  // 항상 현재 세션 id 를 가리키는 ref — 응답이 도착했을 때 "지금 보고 있는 세션"과
+  // 비교해 폐기 여부를 판단한다(떠났으면 버리고, 돌아와 있으면 그대로 반영).
+  const sessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
   const [panelWidth, setPanelWidth] = useState(() => Math.round(window.innerWidth * 0.35))
   // 드래그로 크기 조절 중엔 너비 transition 을 꺼서 끊김 없이 따라오게 한다
   const [dragging, setDragging] = useState(false)
@@ -174,6 +185,8 @@ export default function ChatApp() {
   const dragStartWidth = useRef(0)
 
   const started = messages.some((m) => m.role === 'user')
+  // 지금 보고 있는 세션이 응답 대기 중일 때만 로딩 표시
+  const loading = loadingSid === sessionId
 
   // 로그인 안 했으면 진입 화면으로 돌려보낸다
   useEffect(() => {
@@ -198,13 +211,13 @@ export default function ChatApp() {
 
   // 사이드바에서 과거 세션 선택 → 메시지 기록 복원
   const loadSession = useCallback(async (sid: string) => {
-    loadSeqRef.current += 1 // 진행 중이던 요청 무효화
     setSessionId(sid)
     setDrawerOpen(false)
     setActiveMsgId(null)
     setRightOpen(false)
     setTypingId(null)
-    setLoading(false) // 이전 세션의 로딩 표시가 따라오지 않게
+    // loading 표시는 세션별(loadingSid)이라 여기서 끄지 않는다 — 응답 대기 중인
+    // 세션으로 돌아오면 로딩이 다시 보여야 한다.
     try {
       const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sid)}/messages`)
       if (!res.ok) throw new Error(`${res.status}`)
@@ -242,8 +255,6 @@ export default function ChatApp() {
     setRightOpen(false)
     setDrawerOpen(false)
     setTypingId(null)
-    setLoading(false) // 진행 중이던 로딩 표시 제거
-    loadSeqRef.current += 1 // 진행 중이던 요청 무효화
     setSessionId(`session_${Date.now()}`)
   }, [])
 
@@ -404,17 +415,24 @@ export default function ChatApp() {
     const text = input.trim()
     if (!text || loading || !user) return
 
-    // 이 요청이 속한 세션 + 이동 토큰 — 응답 도착 시 그대로면 반영, 바뀌었으면 버린다
+    // 이 요청이 속한 세션 — 응답 도착 시 같은 세션을 보고 있으면 반영, 떠나 있으면 버린다
     const sid = sessionId
-    const seq = loadSeqRef.current
 
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: text }])
     setInput('')
-    setLoading(true)
+    setLoadingSid(sid)
 
-    // 이 요청을 중지할 수 있도록 컨트롤러 준비
-    const controller = new AbortController()
-    abortRef.current = controller
+    // 새 채팅이면 응답을 기다리지 않고 사이드바에 즉시 추가한다(생성 중에도 보이도록).
+    // 서버는 요청 시작 시점에 세션을 만들지만 목록 갱신은 응답 후라, 그 사이 새 채팅이
+    // 사이드바에서 보이지 않던 공백을 메운다. 응답 후 refreshSessions 가 서버값으로 정합화.
+    setSessions((prev) => {
+      if (prev.some((s) => s.session_id === sid)) return prev // 기존 세션이면 그대로
+      const title = text.length > 30 ? `${text.slice(0, 30)}…` : text
+      return [
+        { session_id: sid, title, preview: text.slice(0, 60), message_count: 1, last_at: nowLocalString() },
+        ...prev,
+      ]
+    })
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
@@ -426,13 +444,12 @@ export default function ChatApp() {
           thread_id: sid,
           level: 'beginner',
         }),
-        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`API 오류: ${response.status}`)
 
       const data = await response.json()
-      // 응답을 기다리는 동안 세션을 이동했다면 이 결과는 버린다(서버엔 저장돼 재방문 시 복원됨)
-      if (loadSeqRef.current !== seq) {
+      // 응답을 기다리는 동안 다른 세션을 보고 있으면 이 결과는 버린다(서버엔 저장돼 재방문 시 복원됨)
+      if (sessionIdRef.current !== sid) {
         refreshSessions()
         return
       }
@@ -479,7 +496,7 @@ export default function ChatApp() {
         })
           .then((r) => (r.ok ? r.json() : null))
           .then((d) => {
-            if (loadSeqRef.current !== seq) return // 세션을 이동했으면 버린다
+            if (sessionIdRef.current !== sid) return // 다른 세션을 보고 있으면 버린다
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === msgId ? { ...m, digest: (d && d.digest) || '', digestLoading: false } : m,
@@ -496,13 +513,9 @@ export default function ChatApp() {
       // 사이드바 목록 갱신(새 세션이면 새로 나타나고, 제목/시간 최신화)
       refreshSessions()
     } catch (error) {
-      // 사용자가 직접 중지한 경우는 오류가 아니므로 메시지를 남기지 않는다
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        return
-      }
       console.error('API 통신 실패:', error)
       // 보낸 세션을 떠났으면 에러 메시지를 남기지 않는다
-      if (loadSeqRef.current === seq) {
+      if (sessionIdRef.current === sid) {
         setMessages((prev) => [
           ...prev,
           {
@@ -512,19 +525,12 @@ export default function ChatApp() {
           },
         ])
       }
+      // 서버는 요청 시작 시 세션을 만들었을 수 있으니 목록을 서버값으로 맞춘다
+      refreshSessions()
     } finally {
-      // 이 요청의 컨트롤러가 아직 남아 있으면 정리
-      if (abortRef.current === controller) abortRef.current = null
-      // 이동하지 않았을 때만 로딩 표시를 끈다(이동했으면 이미 꺼져 있음)
-      if (loadSeqRef.current === seq) setLoading(false)
+      // 이 요청이 끝났으니, 이 세션을 아직 대기 상태로 잡고 있으면 해제한다
+      setLoadingSid((cur) => (cur === sid ? null : cur))
     }
-  }
-
-  // 진행 중인 채팅 요청을 중지한다
-  const handleStop = () => {
-    abortRef.current?.abort()
-    abortRef.current = null
-    setLoading(false)
   }
 
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
@@ -856,24 +862,13 @@ export default function ChatApp() {
                       placeholder="궁금한 기업의 정보에 대해 물어보세요…"
                       className="no-scrollbar max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none"
                     />
-                    {loading ? (
-                      <button
-                        onClick={handleStop}
-                        title="응답 중지"
-                        aria-label="응답 중지"
-                        className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-700 text-white shadow-lg shadow-slate-700/30 transition hover:bg-slate-800"
-                      >
-                        <Square size={14} fill="currentColor" />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={handleSend}
-                        disabled={!input.trim()}
-                        className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-700 disabled:opacity-40 disabled:shadow-none"
-                      >
-                        <Send size={16} />
-                      </button>
-                    )}
+                    <button
+                      onClick={handleSend}
+                      disabled={!input.trim() || loading}
+                      className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-700 disabled:opacity-40 disabled:shadow-none"
+                    >
+                      <Send size={16} />
+                    </button>
                   </div>
                 </div>
 
