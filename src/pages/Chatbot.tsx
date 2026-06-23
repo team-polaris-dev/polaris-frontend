@@ -5,9 +5,8 @@ import {
   X,
   Plus,
   Search,
-  MessageSquare,
+  Trash2,
   Send,
-  Sparkles,
   FileText,
   PanelRightClose,
   PanelRightOpen,
@@ -17,8 +16,10 @@ import {
   LogOut,
   Network,
   BarChart2,
+  Square,
 } from 'lucide-react'
 import StarField from '../components/StarField'
+import PolarisStar from '../components/PolarisStar'
 import ThemeToggle from '../components/ThemeToggle'
 import SettingsMenu from '../components/SettingsMenu'
 import type { GNode, GEdge } from '../components/NetworkGraph'
@@ -94,11 +95,47 @@ const hasFinancials = (m?: { financials?: FinancialGroup[]; content?: string }) 
 // 새로고침해도 현재 대화를 유지하기 위해 활성 세션 ID 를 사용자별로 보관한다.
 const sessionStorageKey = (uid?: string) => `polaris_session:${uid || 'anon'}`
 
+// last_at(파이썬 datetime 문자열, 로컬시각) → epoch ms. 못 읽으면 0.
+const parseTime = (iso: string): number => {
+  const t = new Date((iso || '').replace(' ', 'T')).getTime()
+  return Number.isFinite(t) ? t : 0
+}
+
+// 사이드바 행 우측에 표시할 상대 시간 — 방금 / N분 전 / N시간 전 / N일 전 / M월 D일
+const relativeTime = (iso: string): string => {
+  const t = parseTime(iso)
+  if (!t) return ''
+  const min = Math.floor((Date.now() - t) / 60000)
+  if (min < 1) return '방금'
+  if (min < 60) return `${min}분 전`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}시간 전`
+  const day = Math.floor(hr / 24)
+  if (day < 7) return `${day}일 전`
+  const d = new Date(t)
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`
+}
+
+// 날짜 그룹 헤더 — 오늘 / 어제 / 지난 7일 / 지난 30일 / 이전
+const GROUP_ORDER = ['오늘', '어제', '지난 7일', '지난 30일', '이전'] as const
+const dateGroup = (iso: string): (typeof GROUP_ORDER)[number] => {
+  const t = parseTime(iso)
+  if (!t) return '이전'
+  const now = new Date()
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const DAY = 86400000
+  if (t >= startToday) return '오늘'
+  if (t >= startToday - DAY) return '어제'
+  if (t >= startToday - 7 * DAY) return '지난 7일'
+  if (t >= startToday - 30 * DAY) return '지난 30일'
+  return '이전'
+}
+
 const GREETING: Message = {
   id: 0,
   role: 'assistant',
   content:
-    '기업 정보를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.\n답을 기다리는 동안 잠깐 별멍도 좋아요. ✦',
+    '기업 정보를 그래프로 연결해 분석해 드려요. 궁금한 종목이나 공시 내용을 물어보세요.\n답을 기다리는 동안 잠깐 별멍도 좋아요.',
 }
 
 export default function ChatApp() {
@@ -108,10 +145,13 @@ export default function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([GREETING])
   const [input, setInput] = useState('')
   const [sessions, setSessions] = useState<SessionItem[]>([])
+  const [query, setQuery] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [rightOpen, setRightOpen] = useState(false)
   const [inputFocused, setInputFocused] = useState(false)
   const [loading, setLoading] = useState(false)
+  // 진행 중인 채팅 요청을 중지하기 위한 컨트롤러
+  const abortRef = useRef<AbortController | null>(null)
 
   // 우측 패널 상태 (원본 문서 전용)
   const [activeMsgId, setActiveMsgId] = useState<number | null>(null)
@@ -206,6 +246,47 @@ export default function ChatApp() {
     loadSeqRef.current += 1 // 진행 중이던 요청 무효화
     setSessionId(`session_${Date.now()}`)
   }, [])
+
+  // 대화 삭제 — 소유자 본인 것만(백엔드에서 user_id 로 검증). 보던 대화면 새 대화로.
+  const deleteSession = useCallback(
+    async (sid: string) => {
+      if (!user) return
+      if (!window.confirm('이 대화를 삭제할까요? 되돌릴 수 없습니다.')) return
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/sessions/${encodeURIComponent(sid)}?user_id=${encodeURIComponent(
+            user.user_id,
+          )}`,
+          { method: 'DELETE' },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        setSessions((prev) => prev.filter((s) => s.session_id !== sid))
+        if (sid === sessionId) startNewChat()
+      } catch (e) {
+        console.error('대화 삭제 실패:', e)
+      }
+    },
+    [user, sessionId, startNewChat],
+  )
+
+  // 검색 필터 + 날짜 그룹핑 (sessions 는 백엔드에서 이미 최신순이라 그룹 내 순서 유지)
+  const groupedSessions = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const filtered = q
+      ? sessions.filter((s) => s.title.toLowerCase().includes(q))
+      : sessions
+    const map = new Map<string, SessionItem[]>()
+    for (const s of filtered) {
+      const g = dateGroup(s.last_at)
+      const arr = map.get(g)
+      if (arr) arr.push(s)
+      else map.set(g, [s])
+    }
+    return GROUP_ORDER.filter((g) => map.has(g)).map((g) => ({
+      group: g,
+      items: map.get(g)!,
+    }))
+  }, [sessions, query])
 
   // 활성 세션 ID 보관 → 새로고침해도 같은 대화로 돌아온다.
   useEffect(() => {
@@ -331,6 +412,10 @@ export default function ChatApp() {
     setInput('')
     setLoading(true)
 
+    // 이 요청을 중지할 수 있도록 컨트롤러 준비
+    const controller = new AbortController()
+    abortRef.current = controller
+
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
@@ -341,6 +426,7 @@ export default function ChatApp() {
           thread_id: sid,
           level: 'beginner',
         }),
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`API 오류: ${response.status}`)
 
@@ -410,6 +496,10 @@ export default function ChatApp() {
       // 사이드바 목록 갱신(새 세션이면 새로 나타나고, 제목/시간 최신화)
       refreshSessions()
     } catch (error) {
+      // 사용자가 직접 중지한 경우는 오류가 아니므로 메시지를 남기지 않는다
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return
+      }
       console.error('API 통신 실패:', error)
       // 보낸 세션을 떠났으면 에러 메시지를 남기지 않는다
       if (loadSeqRef.current === seq) {
@@ -423,9 +513,18 @@ export default function ChatApp() {
         ])
       }
     } finally {
+      // 이 요청의 컨트롤러가 아직 남아 있으면 정리
+      if (abortRef.current === controller) abortRef.current = null
       // 이동하지 않았을 때만 로딩 표시를 끈다(이동했으면 이미 꺼져 있음)
       if (loadSeqRef.current === seq) setLoading(false)
     }
+  }
+
+  // 진행 중인 채팅 요청을 중지한다
+  const handleStop = () => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setLoading(false)
   }
 
   const PANEL_META: Record<PanelKey, { label: string; icon: typeof FileText }> = {
@@ -506,40 +605,70 @@ export default function ChatApp() {
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
             <Search size={14} className="text-slate-400" />
             <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
               placeholder="대화 검색"
               className="w-full bg-transparent text-sm placeholder:text-slate-400 focus:outline-none"
             />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10"
+                aria-label="검색어 지우기"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
-        <div className="no-scrollbar mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
-          <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
-            최근 대화
-          </p>
+        <div className="no-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto px-3 py-2">
           {sessions.length === 0 && (
             <p className="px-2 py-3 text-xs text-slate-400">아직 대화 기록이 없습니다.</p>
           )}
-          {sessions.map((s) => (
-            <button
-              key={s.session_id}
-              onClick={() => loadSession(s.session_id)}
-              className={`group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
-                sessionId === s.session_id
-                  ? 'bg-blue-600/10 dark:bg-white/[0.08]'
-                  : 'hover:bg-slate-100 dark:hover:bg-white/[0.04]'
-              }`}
-            >
-              <MessageSquare
-                size={15}
-                className={`mt-0.5 shrink-0 ${
-                  sessionId === s.session_id ? 'text-blue-500' : 'text-slate-400'
-                }`}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">{s.title}</span>
-                <span className="block truncate text-xs text-slate-400">{s.preview}</span>
-              </span>
-              <span className="shrink-0 text-[10px] text-slate-400">{s.message_count}</span>
-            </button>
+          {sessions.length > 0 && groupedSessions.length === 0 && (
+            <p className="px-2 py-3 text-xs text-slate-400">검색 결과가 없습니다.</p>
+          )}
+          {groupedSessions.map(({ group, items }) => (
+            <div key={group} className="mb-1">
+              <p className="px-2 pb-1 pt-2 text-[11px] font-medium text-slate-400">{group}</p>
+              {items.map((s) => {
+                const active = sessionId === s.session_id
+                return (
+                  <div
+                    key={s.session_id}
+                    className={`group relative flex w-full items-center rounded-lg transition ${
+                      active
+                        ? 'bg-blue-600/10 dark:bg-white/[0.08]'
+                        : 'hover:bg-slate-100 dark:hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    {active && (
+                      <span className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-blue-500" />
+                    )}
+                    <button
+                      onClick={() => loadSession(s.session_id)}
+                      className="flex min-w-0 flex-1 items-center py-2 pl-2.5 pr-1 text-left"
+                    >
+                      <span className="block min-w-0 flex-1 truncate text-sm font-medium">
+                        {s.title}
+                      </span>
+                    </button>
+                    {/* 평소엔 상대시간, hover 시 삭제 버튼으로 교체 */}
+                    <span className="shrink-0 pr-2.5 text-[11px] text-slate-400 group-hover:hidden">
+                      {relativeTime(s.last_at)}
+                    </span>
+                    <button
+                      onClick={() => deleteSession(s.session_id)}
+                      className="hidden shrink-0 place-items-center py-2 pl-1 pr-2.5 text-slate-400 transition hover:text-red-500 group-hover:grid"
+                      title="대화 삭제"
+                      aria-label="대화 삭제"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
           ))}
         </div>
 
@@ -631,7 +760,7 @@ export default function ChatApp() {
                     return (
                       <div key={m.id} style={{ animation: 'polarisRise .4s ease both' }} className="flex items-start gap-3">
                         <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-sky-300 to-blue-600 text-white shadow-md shadow-blue-500/30">
-                          <Sparkles size={14} />
+                          <PolarisStar size={18} />
                         </span>
                         <div className="flex w-full min-w-0 max-w-[85%] flex-col items-start gap-2">
 
@@ -653,6 +782,18 @@ export default function ChatApp() {
                           {/* 근거 버튼들 — 타이핑 끝난 뒤 노출. 우측 패널 탭을 연다 */}
                           {typingId !== m.id && (hasDocs(m) || hasGraph(m) || hasFinancials(m)) && (
                             <div className="flex w-full flex-wrap justify-end gap-1.5">
+                              {hasGraph(m) && (
+                                <button
+                                  onClick={() => toggleConstellation(m.id)}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                                    rightOpen && activeMsgId === m.id && activePanel === 'constellation'
+                                      ? 'border-indigo-400 bg-indigo-100 text-indigo-700 dark:border-indigo-400/40 dark:bg-indigo-400/20 dark:text-indigo-200'
+                                      : 'border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-300 dark:hover:bg-indigo-400/20'
+                                  }`}
+                                >
+                                  <Network size={12} /> 관계도
+                                </button>
+                              )}
                               {hasFinancials(m) && (
                                 <button
                                   onClick={() => toggleFinancials(m.id)}
@@ -677,18 +818,6 @@ export default function ChatApp() {
                                   <FileText size={11} /> 원본 문서 {sourceCount(m)}건
                                 </button>
                               )}
-                              {hasGraph(m) && (
-                                <button
-                                  onClick={() => toggleConstellation(m.id)}
-                                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
-                                    rightOpen && activeMsgId === m.id && activePanel === 'constellation'
-                                      ? 'border-indigo-400 bg-indigo-100 text-indigo-700 dark:border-indigo-400/40 dark:bg-indigo-400/20 dark:text-indigo-200'
-                                      : 'border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-300 dark:hover:bg-indigo-400/20'
-                                  }`}
-                                >
-                                  <Network size={12} /> 관계도
-                                </button>
-                              )}
                             </div>
                           )}
                         </div>
@@ -703,8 +832,10 @@ export default function ChatApp() {
 
             {/* 입력 컴포저 */}
             <div
-              className={`w-full shrink-0 px-6 transition-all duration-500 ${
-                started ? 'border-t border-slate-200 py-4 dark:border-white/[0.06]' : 'pb-2'
+              className={`w-full shrink-0 border-t px-6 transition-all duration-500 ${
+                started
+                  ? 'border-slate-200 py-4 dark:border-white/[0.06]'
+                  : 'border-transparent pb-2'
               }`}
             >
               <div className="mx-auto max-w-3xl">
@@ -722,16 +853,27 @@ export default function ChatApp() {
                           handleSend()
                         }
                       }}
-                      placeholder="공시나 종목에 대해 물어보세요…  (Shift+Enter 줄바꿈)"
+                      placeholder="궁금한 기업의 정보에 대해 물어보세요…"
                       className="no-scrollbar max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none"
                     />
-                    <button
-                      onClick={handleSend}
-                      disabled={!input.trim() || loading}
-                      className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-700 disabled:opacity-40 disabled:shadow-none"
-                    >
-                      <Send size={16} />
-                    </button>
+                    {loading ? (
+                      <button
+                        onClick={handleStop}
+                        title="응답 중지"
+                        aria-label="응답 중지"
+                        className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-700 text-white shadow-lg shadow-slate-700/30 transition hover:bg-slate-800"
+                      >
+                        <Square size={14} fill="currentColor" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleSend}
+                        disabled={!input.trim()}
+                        className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-700 disabled:opacity-40 disabled:shadow-none"
+                      >
+                        <Send size={16} />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -840,7 +982,7 @@ export default function ChatApp() {
                     {(!!activeData?.digest || activeData?.digestLoading) && (
                       <div className="mb-4">
                         <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 dark:text-slate-400">
-                          <Sparkles size={13} className="text-indigo-500" />
+                          <PolarisStar size={13} className="text-indigo-500" />
                           AI가 정리한 원문
                         </div>
                         {activeData?.digest ? (
@@ -892,7 +1034,7 @@ export default function ChatApp() {
                         ) : (
                           <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 shadow-sm dark:border-slate-300/30 dark:bg-slate-100">
                             <span className="flex items-center gap-1.5 text-[12px] text-slate-400">
-                              <Sparkles size={12} className="animate-pulse text-indigo-400" />
+                              <PolarisStar size={12} className="animate-pulse text-indigo-400" />
                               원문을 정리하는 중…
                             </span>
                           </div>
