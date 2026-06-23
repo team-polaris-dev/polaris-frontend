@@ -57,18 +57,6 @@ export interface FinancialGroup {
   metrics: FinancialMetric[]
 }
 
-// DART 원본 정형 — 재무비율(주요지표). 재무지표 탭 하단에 표로 보여준다.
-export interface RatioItem {
-  name: string
-  value: string
-  category: string
-}
-export interface RatioGroup {
-  corp_name: string
-  year: number | string | null
-  items: RatioItem[]
-}
-
 /* ─── 표시할 지표 + 색상 ─── */
 const INCOME_KEYS  = ['매출액', '매출총이익', '영업이익', '금융수익', '금융비용', '세전순이익', '법인세비용', '당기순이익']
 const BALANCE_KEYS = ['총자산', '유동자산', '비유동자산', '유형자산', '총부채', '유동부채', '비유동부채', '자본총계', '자본금', '이익잉여금', '현금및현금성자산']
@@ -423,49 +411,16 @@ function ComparisonChart({ groups }: { groups: FinancialGroup[] }) {
   )
 }
 
-/* ─── 재무비율 표 ─── DART 주요지표(부채비율·ROE 등). 회사별 그룹. */
-function RatiosTable({ groups }: { groups: RatioGroup[] }) {
-  const present = groups.filter((g) => g.items?.length)
-  if (!present.length) return null
-  return (
-    <div className="mt-5 border-t border-slate-200 pt-4 dark:border-white/10">
-      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-slate-600">재무비율 (주요지표)</p>
-      {present.map((g, gi) => (
-        <div key={gi} className="mb-3">
-          <p className="mb-1 text-[12px] font-semibold text-slate-700">
-            {g.corp_name}
-            {g.year ? <span className="ml-1 font-normal text-slate-500">({g.year})</span> : null}
-          </p>
-          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <table className="w-full border-collapse text-[11px]">
-              <tbody>
-                {g.items.map((it, i) => (
-                  <tr key={i} className="border-t border-slate-100 first:border-t-0">
-                    <td className="px-2 py-1 text-slate-600">{it.name}</td>
-                    <td className="px-2 py-1 text-right font-medium tabular-nums text-slate-800">{it.value}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /* ─── 메인 컴포넌트 ─── */
 interface Props {
   financials: FinancialGroup[]
   // 답변 본문 — 안에 다년도 표가 있으면 그걸 우선해 비교 차트로 그린다
   sourceText?: string
-  // DART 주요지표(재무비율) — 차트/표 아래에 별도 표로 노출
-  ratios?: RatioGroup[]
   // 우측 패널 모드 — 자체 카드 테두리·접기 헤더 없이 차트만 그린다(탭이 제목 역할).
   panelMode?: boolean
 }
 
-export default function FinancialChart({ financials, sourceText, ratios, panelMode = false }: Props) {
+export default function FinancialChart({ financials, sourceText, panelMode = false }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   // 차트/표 전환 — 한 화면에 둘 다 쌓지 않고 탭으로 바꿔 본다(기본 차트).
   const [view, setView] = useState<'chart' | 'table'>('chart')
@@ -476,7 +431,7 @@ export default function FinancialChart({ financials, sourceText, ratios, panelMo
     return parseFinancialTable(sourceText, financials?.[0]?.corp_name || '')
   }, [sourceText, financials])
 
-  if (!financials?.length && !comparison && !ratios?.length) return null
+  if (!financials?.length && !comparison) return null
 
   // 헤더/탭에 붙는 부제(회사·연도·단위)
   const subtitle = comparison ? (
@@ -562,7 +517,6 @@ export default function FinancialChart({ financials, sourceText, ratios, panelMo
         </div>
       )}
       {hasFin && (view === 'chart' ? chartContent : <MetricPivotTable groups={tableGroups} />)}
-      {ratios?.length ? <RatiosTable groups={ratios} /> : null}
     </div>
   )
 
