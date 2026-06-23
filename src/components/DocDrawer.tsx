@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { ChevronDown, FileText, ExternalLink } from 'lucide-react'
+import { ChevronDown, FileText, ExternalLink, Table2 } from 'lucide-react'
 import Markdown from './Markdown'
+import DisclosureTablesModal from './DisclosureTablesModal'
 
 // 원문 본문 — 흰 종이 느낌의 박스 안에 Markdown(표 포함)으로 렌더한다.
 function DocBody({ text, full = false }: { text?: string; full?: boolean }) {
@@ -330,37 +331,58 @@ export function dedupSources(docs: DocItem[]): DocItem[] {
 // 간단한 출처 목록 — 보고서명 + DART 링크 버튼만. (사실 나열본 아래에 붙는다)
 export function SourceList({ docs }: { docs: DocItem[] }) {
   const sources = dedupSources(docs)
+  // 엑셀 모달 대상 보고서(rcept_no). null 이면 닫힘.
+  const [excelDoc, setExcelDoc] = useState<DocItem | null>(null)
   if (!sources.length) return null
 
   return (
-    <ul className="flex flex-col gap-1.5">
-      {sources.map((d, i) => {
-        const name = (d.title || d.doc_type || '문서').replace(/\s*\(None년\)/, '')
-        return (
-          <li
-            key={d.rcept_no || d.chunk_id || i}
-            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/70 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"
-          >
-            <FileText size={12} className="shrink-0 text-slate-400" />
-            <span className="min-w-0 flex-1 truncate text-[12px] text-slate-700 dark:text-slate-200">
-              {d.corp_name && <span className="mr-1 text-slate-500 dark:text-slate-400">{d.corp_name}</span>}
-              {name}
-              {d.date && <span className="ml-1 text-[10px] text-slate-400">{d.date}</span>}
-            </span>
-            {d.rcept_no && (
-              <a
-                href={dartUrl(d.rcept_no)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-sky-100 px-2 py-1 text-[11px] font-medium text-sky-600 transition hover:bg-sky-200 dark:bg-sky-400/20 dark:text-sky-300 dark:hover:bg-sky-400/30"
-                title="DART 원문 보기"
-              >
-                <ExternalLink size={11} /> 원문
-              </a>
-            )}
-          </li>
-        )
-      })}
-    </ul>
+    <>
+      <ul className="flex flex-col gap-1.5">
+        {sources.map((d, i) => {
+          const name = (d.title || d.doc_type || '문서').replace(/\s*\(None년\)/, '')
+          return (
+            <li
+              key={d.rcept_no || d.chunk_id || i}
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/70 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"
+            >
+              <FileText size={12} className="shrink-0 text-slate-400" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-slate-700 dark:text-slate-200">
+                {d.corp_name && <span className="mr-1 text-slate-500 dark:text-slate-400">{d.corp_name}</span>}
+                {name}
+                {d.date && <span className="ml-1 text-[10px] text-slate-400">{d.date}</span>}
+              </span>
+              {d.rcept_no && (
+                <button
+                  onClick={() => setExcelDoc(d)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-200 dark:bg-emerald-400/20 dark:text-emerald-300 dark:hover:bg-emerald-400/30"
+                  title="이 보고서의 표를 엑셀로 다운로드"
+                >
+                  <Table2 size={11} /> 엑셀
+                </button>
+              )}
+              {d.rcept_no && (
+                <a
+                  href={dartUrl(d.rcept_no)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-sky-100 px-2 py-1 text-[11px] font-medium text-sky-600 transition hover:bg-sky-200 dark:bg-sky-400/20 dark:text-sky-300 dark:hover:bg-sky-400/30"
+                  title="DART 원문 보기"
+                >
+                  <ExternalLink size={11} /> 원문
+                </a>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {excelDoc?.rcept_no && (
+        <DisclosureTablesModal
+          rcept_no={excelDoc.rcept_no}
+          corpName={excelDoc.corp_name}
+          title={excelDoc.title || excelDoc.doc_type}
+          onClose={() => setExcelDoc(null)}
+        />
+      )}
+    </>
   )
 }
